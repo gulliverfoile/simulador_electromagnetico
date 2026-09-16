@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simulador Electromagnético 2D – FDTD (Yee)</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #06060f;
+      color: #e0e0ff;
+      display: flex; flex-direction: column; align-items: center;
+      min-height: 100vh; padding: 20px;
+      background-image: radial-gradient(ellipse at center, #14142a 0%, #03030a 100%);
+    }
+    h1 {
+      text-align: center; margin-bottom: 10px;
+      font-size: clamp(1.4rem, 4.5vw, 1.9rem);
+      background: linear-gradient(135deg, #66ddff, #ff66aa);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .container {
+      max-width: 1200px; width: 100%;
+      display: grid; grid-template-columns: 1fr 2fr; gap: 20px;
+    }
+    @media (max-width: 850px) { .container { grid-template-columns: 1fr; } }
+    .panel {
+      background: rgba(15, 15, 40, 0.85);
+      border: 1px solid rgba(100, 100, 200, 0.3);
+      border-radius: 16px; padding: 20px;
+      backdrop-filter: blur(10px);
+    }
+    .panel h2 { margin-bottom: 12px; font-size: 1.1rem; color: #aaccff; }
+    select, button, input[type="range"], input[type="number"] {
+      width: 100%; padding: 10px 14px; margin-bottom: 10px;
+      border-radius: 8px; border: 1px solid rgba(150, 150, 220, 0.4);
+      background: rgba(30, 30, 60, 0.9); color: #fff; font-size: 1rem;
+      cursor: pointer; transition: all 0.2s;
+    }
+    button { background: linear-gradient(135deg, #2a2a5a, #1a1a3a); }
+    button:hover { background: linear-gradient(135deg, #3a3a7a, #2a2a5a); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .toggle-advanced {
+      display: flex; align-items: center; gap: 10px; margin: 10px 0;
+      cursor: pointer; color: #aaccff; font-size: 0.95rem;
+    }
+    .toggle-advanced input[type="checkbox"] { width: auto; margin: 0; }
+    .submenu {
+      display: none; margin-top: 10px;
+      background: rgba(0,0,0,0.35); padding: 12px; border-radius: 8px;
+    }
+    .submenu.active { display: block; }
+    .param-group {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 8px; gap: 8px;
+    }
+    .param-group label { flex: 1.4; font-size: 0.85rem; color: #aaccff; }
+    .param-group input[type="range"] { flex: 2; margin: 0; padding: 4px; }
+    .param-group span { flex: 0 0 60px; text-align: right; color: #ffcc00; font-family: monospace; font-size: 0.85rem; }
+    .simulation-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+    .simulation-controls button { flex: 1; min-width: 70px; padding: 10px 6px; font-size: 0.9rem; }
+    canvas { width: 100%; height: auto; border-radius: 8px; background: #04040a; margin-top: 8px; display: block; }
+    .probes {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px; margin-top: 10px;
+    }
+    .probe-card { background: rgba(0,0,0,0.35); padding: 6px; border-radius: 6px; }
+    .probe-card canvas { margin: 0; }
+    .status { text-align: center; padding: 8px; border-radius: 6px; font-weight: 600; margin-top: 8px; font-size: 0.9rem; }
+    .status.ok { color: #66ffa0; }
+    .status.partial { color: #ffcc00; }
+    .status.rejected { color: #ff6666; }
+    .hud {
+      display: flex; justify-content: space-between; font-size: 0.8rem;
+      color: #8899bb; font-family: monospace; margin-top: 4px;
+    }
+    .footer { margin-top: 20px; font-size: 0.8rem; color: #556; text-align: center; max-width: 800px; }
+  </style>
+</head>
+<body>
+  <h1>⚡ Simulador Electromagnético 2D · FDTD (Yee) · Modo TM</h1>
+  <div class="container">
+    <div class="panel">
+      <h2>🔧 Modelo</h2>
+      <select id="modelSelect">
+        <option value="freeSpace">Vacío (fuente puntual)</option>
+        <option value="dielectricSlab">Lámina dieléctrica (ε<sub>r</sub> = 4)</option>
+        <option value="waveguide">Guía de onda (paredes PEC)</option>
+        <option value="photonicCrystal">Cristal fotónico (ε<sub>r</sub> = 11.4)</option>
+      </select>
+
+      <h2>🎯 Fuente</h2>
+      <select id="sourceType">
+        <option value="softEz">Ez blanda (dipolo puntual)</option>
+        <option value="hardEz">Ez dura (fuente ideal)</option>
+        <option value="planeWave">Onda plana (línea superior)</option>
+      </select>
+
+      <div class="toggle-advanced">
+        <input type="checkbox" id="advancedToggle">
+        <label for="advancedToggle">Parámetros avanzados</label>
+      </div>
+      <div class="submenu" id="advancedMenu">
+        <div class="param-group">
+          <label>Frecuencia normalizada</label>
+          <input type="range" id="freqSlider" min="0.02" max="0.15" value="0.05" step="0.005">
+          <span id="freqValue">0.050</span>
+        </div>
+        <div class="param-group">
+          <label>Amplitud</label>
+          <input type="range" id="ampSlider" min="0.1" max="5" value="1" step="0.1">
+          <span id="ampValue">1.0</span>
+        </div>
+        <div class="param-group">
+          <label>Courant (S)</label>
+          <input type="range" id="courantSlider" min="0.1" max="0.7" value="0.5" step="0.01">
+          <span id="courantValue">0.50</span>
+        </div>
+        <div class="param-group">
+          <label>Pasos por frame</label>
+          <input type="range" id="spfSlider" min="1" max="20" value="4" step="1">
+          <span id="spfValue">4</span>
+        </div>
+      </div>
+
+      <button id="addProbeBtn">📍 Añadir sonda aleatoria</button>
+
+      <h2>▶️ Simulación</h2>
+      <div class="simulation-controls">
+        <button id="startBtn">Iniciar</button>
+        <button id="pauseBtn" disabled>Pausar</button>
+        <button id="resetBtn">Reiniciar</button>
+        <button id="stepBtn">Paso</button>
+      </div>
+      <div class="status ok" id="statusMsg">Listo. Pulsa Iniciar.</div>
+    </div>
+
+    <div class="panel">
+      <h2>📊 Campo Ez(x, z, t)</h2>
+      <canvas id="wavefieldCanvas" width="720" height="480"></canvas>
+      <div class="hud">
+        <span style="color:#ff4466;">● Fuente</span>
+        <span style="color:#22ddff;">● Sondas</span>
+        <span>t = <span id="timeDisplay">0.000</span></span>
+        <span>paso = <span id="stepDisplay">0</span></span>
+      </div>
+      <h2 style="margin-top:15px;">📈 Sondas (Ez vs. tiempo)</h2>
+      <div class="probes" id="probesContainer"></div>
+    </div>
+  </div>
+  <div class="footer">
+    Esquema de Yee en 2D (modo TM: Ez, Hx, Hy) con CPML de perfil polinómico (20 celdas).
+    Unidades normalizadas: c = ε₀ = μ₀ = 1. Ejecuta un preset y observa reflexión, refracción y guiado.
+  </div>
+
+  <script>
+    (() => {
+      // ============================================================
+      // 1. DOMINIO — entidades y lógica pura, sin dependencias
+      // ============================================================
+      // Unidades normalizadas: c = ε₀ = μ₀ = 1.
+      // Así, dx = dz = 1, η = sqrt(μ/ε) = 1 y todo se simplifica.
+      const EPS0 = 1, MU0 = 1, C0 = 1;
+
+      /**
+       * Medio material isótropo. `pec` marca conductores perfectos:
+       * en esas celdas se fuerza Ez = 0 tras cada paso.
+       */
+      class Medium {
+        constructor({ epsR = 1, muR = 1, sigma = 0, pec = false, label = '' } = {}) {
+          this.epsR = epsR; this.muR = muR; this.sigma = sigma;
+          this.pec = pec; this.label = label;
+          this.eps = epsR * EPS0;
+          this.mu  = muR  * MU0;
+        }
+      }
+
+      /** Fuente puntual o lineal. `type` ∈ {'softEz','hardEz','planeWave'}. */
+      class Source {
+        constructor(x, z, type, freq, amp) {
+          this.x = x; this.z = z;
+          this.type = type; this.freq = freq; this.amp = amp;
+        }
+      }
+
+      /** Sonda que registra Ez y |H| en su posición. */
+      class Probe {
+        constructor(x, z, label = '') {
+          this.x = x; this.z = z; this.label = label;
+          this.ez = []; this.hmag = [];
+        }
+      }
+
+      /** Configuración completa de una simulación. */
+      class SimConfig {
+        constructor() {
+          this.nx = 200; this.nz = 200;
+          this.dx = 1;   this.dz = 1;
+          this.courant = 0.5;
+          this.dt = 0.5 / Math.SQRT2;
+          this.pmlCells = 20;
+          this.pmlOrder = 3;
+          this.source = null;
+          this.probes = [];
+          this.materials = null;   // array nx*nz de Medium
+          this.time = 0;
+          this.stepCount = 0;
+          this.stepsPerFrame = 4;
+        }
+        /** CFL: dt ≤ S·dx/(c·√2). S = 1 es el límite teórico. */
+        updateDt() {
+          this.dt = this.courant * Math.min(this.dx, this.dz) / (C0 * Math.SQRT2);
+        }
+      }
+
+      const VACUUM = new Medium({ label: 'vacío' });
+      const PEC    = new Medium({ pec: true, label: 'PEC' });
+
+      /** Helper: construye la matriz de materiales con una función (i,j)→Medium. */
+      function buildMaterials(nx, nz, fn) {
+        const arr = new Array(nx * nz);
+        for (let j = 0; j < nz; j++)
+          for (let i = 0; i < nx; i++)
+            arr[i + j * nx] = fn(i, j);
+        return arr;
+      }
+
+      // ============================================================
+      // 2. PRESETS DE MODELO — cada uno devuelve un SimConfig fresco
+      // ============================================================
+      const MODEL_PRESETS = {
+        /** Fuente puntual en el centro; onda cilíndrica hacia fuera. */
+        freeSpace() {
+          const c = new SimConfig();
+          c.materials = buildMaterials(c.nx, c.nz, () => VACUUM);
+          c.source = new Source(100, 100, 'softEz', 0.05, 1);
+          c.probes = [ new Probe(140, 100, 'x+40'), new Probe(100, 140, 'z+40') ];
+          return c;
+        },
+
+        /** Lámina dieléctrica: reflexión + transmisión en cada cara. */
+        dielectricSlab() {
+          const c = new SimConfig();
+          c.nx = 300; c.nz = 200;
+          const diel = new Medium({ epsR: 4, label: 'dieléctrico ε=4' });
+          // n = √ε = 2 → R normal = ((1-2)/(1+2))² ≈ 0.111
+          c.materials = buildMaterials(c.nx, c.nz,
+            (i) => (i >= 140 && i < 180) ? diel : VACUUM);
+          c.source = new Source(60, 100, 'softEz', 0.05, 1);
+          c.probes = [
+            new Probe(100, 100, 'incidente'),
+            new Probe(220, 100, 'transmitido'),
+            new Probe(60, 140, 'reflejado'),
+          ];
+          return c;
+        },
+
+        /** Guía de onda: paredes PEC arriba/abajo, propagación en x. */
+        waveguide() {
+          const c = new SimConfig();
+          c.nx = 400; c.nz = 120;
+          c.materials = buildMaterials(c.nx, c.nz,
+            (_, j) => (j < 15 || j >= 105) ? PEC : VACUUM);
+          c.source = new Source(50, 60, 'softEz', 0.05, 1);
+          c.probes = [ new Probe(200, 60, 'x=200'), new Probe(320, 60, 'x=320') ];
+          return c;
+        },
+
+        /** Cristal fotónico: red cuadrada de varillas dieléctricas. */
+        photonicCrystal() {
+          const c = new SimConfig();
+          c.nx = 240; c.nz = 240;
+          const rod = new Medium({ epsR: 11.4, label: 'varilla ε=11.4' });
+          const a = 30, r = 8;   // constante de red y radio (en celdas)
+          c.materials = buildMaterials(c.nx, c.nz, (i, j) => {
+            const px = Math.round((i - 120) / a) * a + 120;
+            const pz = Math.round((j - 120) / a) * a + 120;
+            const dx = i - px, dz = j - pz;
+            return (dx * dx + dz * dz < r * r) ? rod : VACUUM;
+          });
+          c.source = new Source(120, 60, 'softEz', 0.06, 1);
+          c.probes = [
+            new Probe(120, 80, 'cerca'),
+            new Probe(120, 140, 'transmitido'),
+          ];
+          return c;
+        },
+      };
+
+      // ============================================================
+      // 3. INFRAESTRUCTURA — adaptadores concretos
+      // ============================================================
+
+      /** Bus de eventos: mediador desacoplado entre motor, UI y casos de uso. */
+      class EventBus {
+        constructor() { this.listeners = new Map(); }
+        on(evt, cb) {
+          if (!this.listeners.has(evt)) this.listeners.set(evt, new Set());
+          this.listeners.get(evt).add(cb);
+        }
+        emit(evt, payload) {
+          const cbs = this.listeners.get(evt);
+          if (cbs) cbs.forEach(cb => cb(payload));
+        }
+      }
+
+      /**
+       * Motor FDTD 2D en modo TM (Ez, Hx, Hy) con esquema de Yee.
+       *
+       * Discretización (grid escalonado):
+       *   Ez[i, j]     en (i·dx, j·dz)
+       *   Hx[i, j]     en (i·dx, (j+½)·dz)
+       *   Hy[i, j]     en ((i+½)·dx, j·dz)
+       *
+       * Actualización leapfrog:
+       *   H^{n+½} = H^{n-½} - (dt/μ) ∇×E^n
+       *   E^{n+1} = E^n     + (dt/ε) ∇×H^{n+½}   (con pérdidas si σ>0)
+       *
+       * Fronteras: CPML (Roden & Gedney 2000) con κ=1, α=0.
+       *   b_x[i] = exp(-σ_x[i]·dt/ε₀)
+       *   c_x[i] = b_x[i] - 1
+       *   ψ^{n} = b·ψ^{n-1} + c·(∂/∂x)^n
+       * y la derivada efectiva es (∂/∂x + ψ).
+       */
+      class FDTDEngine {
+        constructor() { this.config = null; }
+
+        init(config) {
+          this.config = config;
+          this._allocate();
+          this._buildMaterialCoefficients();
+          this._buildPMLCoefficients();
+          this._buildSourceFunction();
+          this._resetFields();
+        }
+
+        // ---- Asignación de memoria (una sola vez por modelo) ----
+        _allocate() {
+          const n = this.config.nx * this.config.nz;
+          this.ez = new Float32Array(n);
+          this.hx = new Float32Array(n);
+          this.hy = new Float32Array(n);
+          // Variables auxiliares del CPML (una por componente y dirección)
+          this.psi_ez_x = new Float32Array(n);
+          this.psi_ez_y = new Float32Array(n);
+          this.psi_hx_y = new Float32Array(n);
+          this.psi_hy_x = new Float32Array(n);
+          // Coeficientes de actualización (precalculados)
+          this.ca = new Float32Array(n);
+          this.cb = new Float32Array(n);
+          this.mu_hx = new Float32Array(n);
+          this.mu_hy = new Float32Array(n);
+          this.pecMask = new Uint8Array(n);
+        }
+
+        /**
+         * Coeficientes de pérdidas (forma exponencial estable):
+         *   ca = (1 - σ dt / 2ε) / (1 + σ dt / 2ε)
+         *   cb = (dt/ε) / (1 + σ dt / 2ε)
+         * Además promedia μ en las posiciones escalonadas de H.
+         */
+        _buildMaterialCoefficients() {
+          const { nx, nz, dt, materials } = this.config;
+          for (let j = 0; j < nz; j++) {
+            for (let i = 0; i < nx; i++) {
+              const idx = i + j * nx;
+              const med = materials[idx];
+              const denom = 1 + med.sigma * dt / (2 * med.eps);
+              this.ca[idx] = (1 - med.sigma * dt / (2 * med.eps)) / denom;
+              this.cb[idx] = (dt / med.eps) / denom;
+
+              // Hx vive entre Ez[i,j] y Ez[i,j+1] → promediar μ verticalmente
+              const medBelow = (j + 1 < nz) ? materials[i + (j + 1) * nx] : med;
+              this.mu_hx[idx] = 0.5 * (med.mu + medBelow.mu);
+
+              // Hy vive entre Ez[i,j] y Ez[i+1,j] → promediar μ horizontalmente
+              const medRight = (i + 1 < nx) ? materials[(i + 1) + j * nx] : med;
+              this.mu_hy[idx] = 0.5 * (med.mu + medRight.mu);
+
+              this.pecMask[idx] = med.pec ? 1 : 0;
+            }
+          }
+        }
+
+        /**
+         * Perfil de conductividad del CPML:
+         *   σ(d) = σ_max · (d/L)^m
+         * σ_max se elige para conseguir una reflectividad teórica ~1e-6:
+         *   σ_max = -(m+1) · ln(R(0)) / (2·η·L)     con η=1 en unidades norm.
+         */
+        _buildPMLCoefficients() {
+          const { nx, nz, dt, pmlCells: L, pmlOrder: m } = this.config;
+          const sigmaMax = -(m + 1) * Math.log(1e-6) / (2 * L);
+
+          this.bx = new Float32Array(nx);
+          this.cx = new Float32Array(nx);
+          this.by = new Float32Array(nz);
+          this.cy = new Float32Array(nz);
+
+          for (let i = 0; i < nx; i++) {
+            let s = 0;
+            if (i < L)          s = sigmaMax * Math.pow((L - i) / L, m);
+            else if (i >= nx-L) s = sigmaMax * Math.pow((i - (nx - L - 1)) / L, m);
+            this.bx[i] = Math.exp(-s * dt);
+            this.cx[i] = this.bx[i] - 1;   // límite correcto cuando s→0
+          }
+          for (let j = 0; j < nz; j++) {
+            let s = 0;
+            if (j < L)          s = sigmaMax * Math.pow((L - j) / L, m);
+            else if (j >= nz-L) s = sigmaMax * Math.pow((j - (nz - L - 1)) / L, m);
+            this.by[j] = Math.exp(-s * dt);
+            this.cy[j] = this.by[j] - 1;
+          }
+        }
+
+        /**
+         * Pulso gaussiano modulado: paquete de banda estrecha centrado
+         * alrededor de f, con ~3-4 ciclos. Ideal para ver propagación
+         * y reflexiones sin llenar todo el dominio de energía.
+         */
+        _buildSourceFunction() {
+          const src = this.config.source;
+          if (!src) { this.sourceFunc = null; return; }
+          const f = src.freq;
+          const t0  = 3 / f;      // centro temporal del pulso
+          const tau = 1.2 / f;    // ancho del envolvente gaussiano
+          this.sourceFunc = (t) => {
+            const arg = (t - t0) / tau;
+            return src.amp * Math.sin(2 * Math.PI * f * (t - t0)) * Math.exp(-arg * arg);
+          };
+        }
+
+        _resetFields() {
+          this.ez.fill(0); this.hx.fill(0); this.hy.fill(0);
+          this.psi_ez_x.fill(0); this.psi_ez_y.fill(0);
+          this.psi_hx_y.fill(0); this.psi_hy_x.fill(0);
+          this.config.time = 0;
+          this.config.stepCount = 0;
+          this.config.probes.forEach(p => { p.ez = []; p.hmag = []; });
+        }
+
+        // ------------------------------------------------------------
+        // Núcleo del solver: un paso temporal completo (leapfrog)
+        // ------------------------------------------------------------
+        step() {
+          const cfg = this.config;
+          const { nx, nz, dt, source, probes } = cfg;
+          const dx = cfg.dx, dz = cfg.dz;
+          const t = cfg.time;
+
+          // --- (1) Actualización de H (usa E del paso actual) ---
+
+          // Hx[i,j] = Hx[i,j] - (dt/μ)·[(∂Ez/∂z)|_{j+½} + ψ_hx]
+          for (let j = 0; j < nz - 1; j++) {
+            for (let i = 0; i < nx; i++) {
+              const idx = i + j * nx;
+              const dEz_dz = (this.ez[idx + nx] - this.ez[idx]) / dz;
+              const psi = this.by[j] * this.psi_hx_y[idx] + this.cy[j] * dEz_dz;
+              this.psi_hx_y[idx] = psi;
+              this.hx[idx] -= (dt / this.mu_hx[idx]) * (dEz_dz + psi);
+            }
+          }
+
+          // Hy[i,j] = Hy[i,j] + (dt/μ)·[(∂Ez/∂x)|_{i+½} + ψ_hy]
+          for (let j = 0; j < nz; j++) {
+            for (let i = 0; i < nx - 1; i++) {
+              const idx = i + j * nx;
+              const dEz_dx = (this.ez[idx + 1] - this.ez[idx]) / dx;
+              const psi = this.bx[i] * this.psi_hy_x[idx] + this.cx[i] * dEz_dx;
+              this.psi_hy_x[idx] = psi;
+              this.hy[idx] += (dt / this.mu_hy[idx]) * (dEz_dx + psi);
+            }
+          }
+
+          // --- (2) Actualización de E (usa H recién calculado) ---
+          // Ez = ca·Ez + cb·[(∂Hy/∂x + ψ_ex) - (∂Hx/∂z + ψ_ey)]
+          for (let j = 1; j < nz - 1; j++) {
+            for (let i = 1; i < nx - 1; i++) {
+              const idx = i + j * nx;
+              const dHy_dx = (this.hy[idx] - this.hy[idx - 1]) / dx;
+              const dHx_dz = (this.hx[idx] - this.hx[idx - nx]) / dz;
+              const psiX = this.bx[i] * this.psi_ez_x[idx] + this.cx[i] * dHy_dx;
+              const psiY = this.by[j] * this.psi_ez_y[idx] + this.cy[j] * dHx_dz;
+              this.psi_ez_x[idx] = psiX;
+              this.psi_ez_y[idx] = psiY;
+              let val = this.ca[idx] * this.ez[idx]
+                      + this.cb[idx] * ((dHy_dx + psiX) - (dHx_dz + psiY));
+              if (this.pecMask[idx]) val = 0;   // condición PEC
+              this.ez[idx] = val;
+            }
+          }
+
+          // --- (3) Inyección de fuente (después de E, para no ser sobreescrita) ---
+          if (source && this.sourceFunc) {
+            const val = this.sourceFunc(t);
+            if (source.type === 'planeWave') {
+              // Línea horizontal, justo por dentro del PML superior
+              const jLine = cfg.pmlCells + 2;
+              for (let i = 0; i < nx; i++) this.ez[i + jLine * nx] += val;
+            } else {
+              const si = Math.round(source.x);
+              const sj = Math.round(source.z);
+              if (si >= 1 && si < nx - 1 && sj >= 1 && sj < nz - 1) {
+                const idx = si + sj * nx;
+                if (source.type === 'hardEz') this.ez[idx] = val;
+                else                          this.ez[idx] += val;
+              }
+            }
+          }
+
+          // --- (4) Registro de sondas ---
+          for (let k = 0; k < probes.length; k++) {
+            const p = probes[k];
+            const pi = Math.round(p.x), pj = Math.round(p.z);
+            if (pi >= 0 && pi < nx && pj >= 0 && pj < nz) {
+              const idx = pi + pj * nx;
+              p.ez.push(this.ez[idx]);
+              p.hmag.push(Math.sqrt(this.hx[idx] ** 2 + this.hy[idx] ** 2));
+              // Cota de memoria: conservamos las últimas 3000 muestras
+              if (p.ez.length > 4000) {
+                p.ez.splice(0, 2000);
+                p.hmag.splice(0, 2000);
+              }
+            }
+          }
+
+          cfg.time += dt;
+          cfg.stepCount++;
+        }
+
+        // --- Salidas del motor para la UI ---
+        getFieldData() { return this.ez; }   // referencia viva; usar inmediatamente
+        getProbeData() {
+          return this.config.probes.map(p => Float32Array.from(p.ez));
+        }
+      }
+
+      /**
+       * Visualizador del campo Ez con mapa de color divergente
+       * (azul → negro → naranja) y preservando el aspect ratio.
+       */
+      class FieldVisualizer {
+        constructor(canvas) {
+          this.canvas = canvas;
+          this.ctx = canvas.getContext('2d');
+          this.offscreen = null;
+          this.offCtx = null;
+          this.imageData = null;
+        }
+
+        drawField(data, nx, nz, config) {
+          // Buffer offscreen del tamaño del grid (mucho más rápido que pintar píxel a píxel)
+          if (!this.offscreen || this.offscreen.width !== nx || this.offscreen.height !== nz) {
+            this.offscreen = document.createElement('canvas');
+            this.offscreen.width = nx;
+            this.offscreen.height = nz;
+            this.offCtx = this.offscreen.getContext('2d');
+            this.imageData = this.offCtx.createImageData(nx, nz);
+          }
+          const img = this.imageData.data;
+
+          // Normalización por frame (evita que el color dependa de la amplitud absoluta)
+          let maxVal = 1e-20;
+          for (let k = 0; k < data.length; k++) {
+            const a = Math.abs(data[k]);
+            if (a > maxVal) maxVal = a;
+          }
+          const inv = 1 / maxVal;
+
+          for (let j = 0; j < nz; j++) {
+            for (let i = 0; i < nx; i++) {
+              const idx = i + j * nx;
+              const med = config.materials[idx];
+              const p = idx * 4;
+              let r, g, b;
+              if (med.pec) {
+                // PEC: gris apagado
+                r = 55; g = 55; b = 65;
+              } else {
+                const val = data[idx] * inv;
+                const col = this._divergingColor(val);
+                // Tinte azulado tenue para dieléctricos (ε_r > 1.5)
+                const tint = med.epsR > 1.5;
+                r = Math.min(255, col[0] + (tint ? 10 : 0));
+                g = Math.min(255, col[1] + (tint ? 5  : 0));
+                b = Math.min(255, col[2] + (tint ? 45 : 0));
+              }
+              img[p] = r; img[p + 1] = g; img[p + 2] = b; img[p + 3] = 255;
+            }
+          }
+          this.offCtx.putImageData(this.imageData, 0, 0);
+
+          // Dibujo preservando aspect ratio y centrado
+          const ctx = this.ctx;
+          const W = this.canvas.width, H = this.canvas.height;
+          const aspect = nx / nz, canvasAspect = W / H;
+          let dw, dh, dx0, dy0;
+          if (aspect > canvasAspect) {
+            dw = W; dh = W / aspect; dx0 = 0; dy0 = (H - dh) / 2;
+          } else {
+            dh = H; dw = H * aspect; dx0 = (W - dw) / 2; dy0 = 0;
+          }
+          ctx.fillStyle = '#04040a';
+          ctx.fillRect(0, 0, W, H);
+          ctx.imageSmoothingEnabled = true;
+          ctx.drawImage(this.offscreen, dx0, dy0, dw, dh);
+
+          // Marcadores de fuente y sondas
+          const toCanvas = (x, z) => ({
+            cx: dx0 + (x / nx) * dw,
+            cy: dy0 + (z / nz) * dh,
+          });
+          if (config.source && config.source.type !== 'planeWave') {
+            const { cx, cy } = toCanvas(config.source.x, config.source.z);
+            ctx.fillStyle = '#ff4466';
+            ctx.beginPath(); ctx.arc(cx, cy, 5, 0, 2 * Math.PI); ctx.fill();
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+          }
+          ctx.fillStyle = '#22ddff';
+          ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+          config.probes.forEach(p => {
+            const { cx, cy } = toCanvas(p.x, p.z);
+            ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+          });
+        }
+
+        /** Mapa divergente: azul (−) ↔ negro (0) ↔ naranja (+). */
+        _divergingColor(t) {
+          if (t >= 0) {
+            const s = Math.min(1, t);
+            return [Math.floor(5 + 250 * s), Math.floor(5 + 75 * s), Math.floor(15 + 5 * s)];
+          } else {
+            const s = Math.min(1, -t);
+            return [Math.floor(5 + 15 * s), Math.floor(5 + 75 * s), Math.floor(15 + 240 * s)];
+          }
+        }
+      }
+
+      /** Renderiza las trazas de las sondas como pequeñas tarjetas. */
+      class ProbeRenderer {
+        constructor(container) { this.container = container; }
+
+        draw(traces, probes) {
+          this.container.innerHTML = '';
+          traces.forEach((trace, idx) => {
+            const card = document.createElement('div');
+            card.className = 'probe-card';
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 240; canvas.height = 70;
+            card.appendChild(canvas);
+
+            const lbl = document.createElement('div');
+            lbl.style.cssText = 'font-size:0.75rem;color:#aaccff;margin-top:2px;';
+            const p = probes[idx];
+            lbl.textContent = `Sonda ${idx + 1}${p && p.label ? ' · ' + p.label : ''} (${trace.length} muestras)`;
+            card.appendChild(lbl);
+
+            this.container.appendChild(card);
+
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#04040a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            if (trace.length < 2) return;
+
+            let mx = 1e-12;
+            for (let k = 0; k < trace.length; k++) {
+              const a = Math.abs(trace[k]);
+              if (a > mx) mx = a;
+            }
+            const yScale = (canvas.height * 0.4) / mx;
+
+            ctx.strokeStyle = 'rgba(150,150,200,0.25)';
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height / 2);
+            ctx.lineTo(canvas.width, canvas.height / 2);
+            ctx.stroke();
+
+            ctx.strokeStyle = '#44ddff';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            const N = trace.length;
+            const startIdx = Math.max(0, N - canvas.width);
+            const shown = N - startIdx;
+            for (let k = 0; k < shown; k++) {
+              const x = (k / Math.max(1, shown - 1)) * canvas.width;
+              const y = canvas.height / 2 - trace[startIdx + k] * yScale;
+              if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+          });
+        }
+      }
+
+      // ============================================================
+      // 4. CASOS DE USO — orquestan dominio + infraestructura
+      // ============================================================
+
+      class StartSimUC {
+        constructor(engine, bus) { this.engine = engine; this.bus = bus; this.running = false; }
+        execute() {
+          if (this.running) return;
+          this.running = true;
+          this.bus.emit('simulationStarted');
+          const loop = () => {
+            if (!this.running) return;
+            const spf = this.engine.config.stepsPerFrame || 4;
+            for (let i = 0; i < spf; i++) this.engine.step();
+            this._emitUpdate();
+            this.animationId = requestAnimationFrame(loop);
+          };
+          this.animationId = requestAnimationFrame(loop);
+        }
+        pause() {
+          this.running = false;
+          if (this.animationId) cancelAnimationFrame(this.animationId);
+          this.bus.emit('simulationPaused');
+        }
+        stop() {
+          this.running = false;
+          if (this.animationId) cancelAnimationFrame(this.animationId);
+        }
+        _emitUpdate() {
+          this.bus.emit('fieldUpdated', {
+            data: this.engine.getFieldData(),
+            nx: this.engine.config.nx, nz: this.engine.config.nz,
+            config: this.engine.config,
+            traces: this.engine.getProbeData(),
+            probes: this.engine.config.probes,
+          });
+        }
+      }
+
+      class StepSimUC {
+        constructor(engine, bus) { this.engine = engine; this.bus = bus; }
+        execute() {
+          this.engine.step();
+          this.bus.emit('fieldUpdated', {
+            data: this.engine.getFieldData(),
+            nx: this.engine.config.nx, nz: this.engine.config.nz,
+            config: this.engine.config,
+            traces: this.engine.getProbeData(),
+            probes: this.engine.config.probes,
+          });
+        }
+      }
+
+      class ResetSimUC {
+        constructor(engine, bus) { this.engine = engine; this.bus = bus; }
+        execute() {
+          this.engine._resetFields();
+          this.bus.emit('fieldUpdated', {
+            data: this.engine.getFieldData(),
+            nx: this.engine.config.nx, nz: this.engine.config.nz,
+            config: this.engine.config,
+            traces: this.engine.getProbeData(),
+            probes: this.engine.config.probes,
+          });
+          this.bus.emit('simulationReset');
+        }
+      }
+
+      class UpdateSourceUC {
+        constructor(engine, bus) { this.engine = engine; this.bus = bus; }
+        execute(src) {
+          this.engine.config.source = src;
+          this.engine._buildSourceFunction();
+          this.bus.emit('sourceUpdated', { source: src });
+        }
+      }
+
+      class AddProbeUC {
+        constructor(engine, bus) { this.engine = engine; this.bus = bus; }
+        execute(probe) {
+          this.engine.config.probes.push(probe);
+          this.bus.emit('probesUpdated', { probes: this.engine.config.probes });
+          this.bus.emit('fieldUpdated', {
+            data: this.engine.getFieldData(),
+            nx: this.engine.config.nx, nz: this.engine.config.nz,
+            config: this.engine.config,
+            traces: this.engine.getProbeData(),
+            probes: this.engine.config.probes,
+          });
+        }
+      }
+
+      /** Cambia de modelo preservando parámetros de usuario razonables. */
+      class UpdateModelUC {
+        constructor(engine, bus) { this.engine = engine; this.bus = bus; }
+        execute(modelType) {
+          const build = MODEL_PRESETS[modelType];
+          if (!build) return;
+          const config = build();
+          const prev = this.engine.config;
+          if (prev) {
+            config.courant = prev.courant;
+            config.stepsPerFrame = prev.stepsPerFrame;
+            if (config.source && prev.source) {
+              config.source.type = prev.source.type;
+              config.source.freq = prev.source.freq;
+              config.source.amp  = prev.source.amp;
+            }
+          }
+          config.updateDt();
+          this.engine.init(config);
+          this.bus.emit('modelChanged', { modelType, config });
+        }
+      }
+
+      // ============================================================
+      // 5. UI — orquestador de la vista, suscrito al bus
+      // ============================================================
+      class EMUI {
+        constructor(bus, engine, visualizer, probeRenderer) {
+          this.bus = bus;
+          this.engine = engine;
+          this.visualizer = visualizer;
+          this.probeRenderer = probeRenderer;
+
+          this.startUC = new StartSimUC(engine, bus);
+          this.stepUC = new StepSimUC(engine, bus);
+          this.resetUC = new ResetSimUC(engine, bus);
+          this.updateSourceUC = new UpdateSourceUC(engine, bus);
+          this.addProbeUC = new AddProbeUC(engine, bus);
+          this.updateModelUC = new UpdateModelUC(engine, bus);
+
+          this.modelSelect   = document.getElementById('modelSelect');
+          this.sourceType    = document.getElementById('sourceType');
+          this.advancedToggle = document.getElementById('advancedToggle');
+          this.advancedMenu  = document.getElementById('advancedMenu');
+          this.freqSlider    = document.getElementById('freqSlider');
+          this.freqValue     = document.getElementById('freqValue');
+          this.ampSlider     = document.getElementById('ampSlider');
+          this.ampValue      = document.getElementById('ampValue');
+          this.courantSlider = document.getElementById('courantSlider');
+          this.courantValue  = document.getElementById('courantValue');
+          this.spfSlider     = document.getElementById('spfSlider');
+          this.spfValue      = document.getElementById('spfValue');
+          this.addProbeBtn   = document.getElementById('addProbeBtn');
+          this.startBtn      = document.getElementById('startBtn');
+          this.pauseBtn      = document.getElementById('pauseBtn');
+          this.resetBtn      = document.getElementById('resetBtn');
+          this.stepBtn       = document.getElementById('stepBtn');
+          this.statusMsg     = document.getElementById('statusMsg');
+          this.timeDisplay   = document.getElementById('timeDisplay');
+          this.stepDisplay   = document.getElementById('stepDisplay');
+
+          this._setupListeners();
+          this._applyModel('freeSpace');
+        }
+
+        _setupListeners() {
+          this.modelSelect.addEventListener('change',
+            () => this._applyModel(this.modelSelect.value));
+
+          this.advancedToggle.addEventListener('change', () => {
+            this.advancedMenu.classList.toggle('active', this.advancedToggle.checked);
+          });
+
+          this.freqSlider.addEventListener('input', () => {
+            const v = parseFloat(this.freqSlider.value);
+            this.freqValue.textContent = v.toFixed(3);
+            if (this.engine.config.source) {
+              this.engine.config.source.freq = v;
+              this.updateSourceUC.execute(this.engine.config.source);
+            }
+          });
+
+          this.ampSlider.addEventListener('input', () => {
+            const v = parseFloat(this.ampSlider.value);
+            this.ampValue.textContent = v.toFixed(1);
+            if (this.engine.config.source) {
+              this.engine.config.source.amp = v;
+              this.updateSourceUC.execute(this.engine.config.source);
+            }
+          });
+
+          this.courantSlider.addEventListener('input', () => {
+            const v = parseFloat(this.courantSlider.value);
+            this.courantValue.textContent = v.toFixed(2);
+            this.engine.config.courant = v;
+            this.engine.config.updateDt();
+            // Al cambiar dt hay que recalcular ambos bloques de coeficientes
+            this.engine._buildMaterialCoefficients();
+            this.engine._buildPMLCoefficients();
+          });
+
+          this.spfSlider.addEventListener('input', () => {
+            const v = parseInt(this.spfSlider.value, 10);
+            this.spfValue.textContent = v;
+            this.engine.config.stepsPerFrame = v;
+          });
+
+          this.sourceType.addEventListener('change', () => {
+            if (this.engine.config.source) {
+              this.engine.config.source.type = this.sourceType.value;
+              this.updateSourceUC.execute(this.engine.config.source);
+            }
+          });
+
+          this.addProbeBtn.addEventListener('click', () => {
+            const cfg = this.engine.config;
+            const x = Math.floor(20 + Math.random() * (cfg.nx - 40));
+            const z = Math.floor(20 + Math.random() * (cfg.nz - 40));
+            this.addProbeUC.execute(new Probe(x, z, 'aleatoria'));
+          });
+
+          this.startBtn.addEventListener('click', () => {
+            this.startUC.execute();
+            this.startBtn.disabled = true;
+            this.pauseBtn.disabled = false;
+            this.stepBtn.disabled = true;
+            this._setStatus('Simulación en ejecución…', 'ok');
+          });
+          this.pauseBtn.addEventListener('click', () => {
+            this.startUC.pause();
+            this.startBtn.disabled = false;
+            this.pauseBtn.disabled = true;
+            this.stepBtn.disabled = false;
+            this._setStatus('Pausada', 'partial');
+          });
+          this.resetBtn.addEventListener('click', () => {
+            this.startUC.stop();
+            this.resetUC.execute();
+            this.startBtn.disabled = false;
+            this.pauseBtn.disabled = true;
+            this.stepBtn.disabled = false;
+            this._setStatus('Reiniciada', 'ok');
+          });
+          this.stepBtn.addEventListener('click', () => this.stepUC.execute());
+
+          // Actualización de la vista (la UI no accede al motor directamente)
+          this.bus.on('fieldUpdated', ({ data, nx, nz, config, traces, probes }) => {
+            this.visualizer.drawField(data, nx, nz, config);
+            this.probeRenderer.draw(traces, probes);
+            this.timeDisplay.textContent = config.time.toFixed(3);
+            this.stepDisplay.textContent = config.stepCount;
+          });
+        }
+
+        _setStatus(text, type) {
+          this.statusMsg.textContent = text;
+          this.statusMsg.className = 'status ' + (type || 'ok');
+        }
+
+        _applyModel(modelType) {
+          this.updateModelUC.execute(modelType);
+          const cfg = this.engine.config;
+          if (cfg.source) {
+            this.sourceType.value = cfg.source.type;
+            this.freqSlider.value = cfg.source.freq;
+            this.freqValue.textContent = cfg.source.freq.toFixed(3);
+            this.ampSlider.value = cfg.source.amp;
+            this.ampValue.textContent = cfg.source.amp.toFixed(1);
+          }
+          this.courantSlider.value = cfg.courant;
+          this.courantValue.textContent = cfg.courant.toFixed(2);
+          this.spfSlider.value = cfg.stepsPerFrame;
+          this.spfValue.textContent = cfg.stepsPerFrame;
+
+          // Refrescar vista con el estado inicial (todo a cero)
+          this.bus.emit('fieldUpdated', {
+            data: this.engine.getFieldData(),
+            nx: cfg.nx, nz: cfg.nz, config: cfg,
+            traces: this.engine.getProbeData(),
+            probes: cfg.probes,
+          });
+          this._setStatus(`Modelo: ${modelType} · grid ${cfg.nx}×${cfg.nz}`, 'ok');
+        }
+      }
+
+      // ============================================================
+      // 6. COMPOSICIÓN — punto de entrada, cablea todo
+      // ============================================================
+      window.addEventListener('load', () => {
+        const bus = new EventBus();
+        const engine = new FDTDEngine();
+
+        const waveCanvas = document.getElementById('wavefieldCanvas');
+        waveCanvas.width = 720;
+        waveCanvas.height = 480;
+        const visualizer = new FieldVisualizer(waveCanvas);
+
+        const probesContainer = document.getElementById('probesContainer');
+        const probeRenderer = new ProbeRenderer(probesContainer);
+
+        // La UI se auto-suscribe al bus y arranca el modelo por defecto
+        // eslint-disable-next-line no-unused-vars
+        const ui = new EMUI(bus, engine, visualizer, probeRenderer);
+      });
+    })();
+  </script>
+</body>
+</html>
