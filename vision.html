@@ -71,6 +71,7 @@
   .info-line {
     font-family: 'Courier New', monospace; font-size: 0.75rem; color: #99bbee;
     margin-top: 8px; background: #0a0a18; padding: 8px; border-radius: 6px;
+    line-height: 1.5;
   }
   #test-results {
     max-width: 1200px; margin: 30px auto 0;
@@ -160,7 +161,7 @@ const ModuleRegistry = (() => {
     add(id, def) { modules.set(id, { id, ...def }); },
     get(id) { return modules.get(id); },
     all() { return [...modules.values()]; },
-    clear() { modules.clear(); }, // para tests
+    clear() { modules.clear(); },
   };
 })();
 
@@ -177,7 +178,7 @@ class Orchestrator {
     this.rootEl = rootEl;
     this.bus = new EventBus();
     this.ctx = { bus: this.bus, orchestrator: this };
-    this.active = new Map();     // id → { container, api, frame, unmount, ctx }
+    this.active = new Map();
   }
 
   boot() {
@@ -212,7 +213,6 @@ class Orchestrator {
     const mod = this.registry.get(id);
     if (!mod) return;
 
-    // Activar dependencias primero
     for (const dep of (mod.depende || [])) {
       if (!this.active.has(dep)) {
         this.activate(dep);
@@ -252,7 +252,6 @@ class Orchestrator {
   deactivate(id) {
     if (!this.active.has(id)) return;
     const entry = this.active.get(id);
-    // No desactivar si otro módulo activo depende de este
     for (const other of this.registry.all()) {
       if (other.id === id) continue;
       if ((other.depende || []).includes(id) && this.active.has(other.id)) {
@@ -293,12 +292,11 @@ class Orchestrator {
 // ============================================================================
 // SECCIÓN 3 — MÓDULO: em-motor
 // ============================================================================
-// Motor FDTD 2D en modo TM (Ez, Hx, Hy) con esquema de Yee.
+// Motor FDTD 2D modo TM. Grid escalonado, frontera absorbente tipo sponge.
 // Genera el campo electromagnético. Otros módulos leen el campo.
-// No sabe nada de color, ni de percepción, ni de DOM.
+// Soporta 5 longitudes de onda: UV(380), azul(450), verde(550), rojo(650), IR(780).
 
 (() => {
-  /** Solver FDTD 2D TM. Grid escalonado. */
   class FDTD {
     constructor(nx, nz) {
       const n = nx * nz;
@@ -355,7 +353,7 @@ class Orchestrator {
     prisma(i, j, nx, nz) {
       const x = i / nx, y = j / nz;
       if (x > 0.4 && x < 0.8 && y > 0.2 && y < 0.8) {
-        const left = 0.4, right = 0.8, apex = 0.65;
+        const apex = 0.65, left = 0.4, right = 0.8;
         const h = 1 - Math.abs((x - apex) / (right - left));
         if (y > 0.5 - h * 0.4 && y < 0.5 + h * 0.4) return 4;
       }
@@ -379,42 +377,45 @@ class Orchestrator {
   }
 
   const NX = 110, NZ = 90;
+
+  // Tabla extendida: del UV cercano al IR cercano.
+  // freq: frecuencia normalizada. eps: ε base (dispersión aproximada).
+  // label: nombre humano. nm: longitud de onda.
+  const WL_TABLE = {
+    380: { freq: 0.065, eps: 4.7, label: 'UV' },
+    450: { freq: 0.060, eps: 4.5, label: 'azul' },
+    550: { freq: 0.050, eps: 4.0, label: 'verde' },
+    650: { freq: 0.040, eps: 3.6, label: 'rojo' },
+    780: { freq: 0.033, eps: 3.3, label: 'IR' },
+  };
+
   const sims = [];
-  let mode = 'mono';
+  let mode = 'mono';           // 'mono' | 'white' | 'full'
   let scenarioName = 'lamina';
   let wavelengthNm = 550;
   let running = true;
   let stepsPerFrame = 3;
 
-  const WL_TABLE = {
-    650: { freq: 0.04, eps: 3.6, nm: 650 },
-    550: { freq: 0.05, eps: 4.0, nm: 550 },
-    450: { freq: 0.06, eps: 4.5, nm: 450 },
-  };
-
   function buildSims() {
     sims.length = 0;
-    if (mode === 'white') {
-      for (const key of [650, 550, 450]) {
-        const wl = WL_TABLE[key];
-        const s = new FDTD(NX, NZ);
-        s.wavelengthNm = wl.nm;
-        s.color = wavelengthToRGB(wl.nm);
-        s.source = makeSource(wl.freq);
-        s.setEpsilon((i, j) => {
-          const base = scenarios[scenarioName](i, j, NX, NZ);
-          if (base === 1) return 1;
-          return 1 + (base - 1) * (wl.eps / 4.0);
-        });
-        sims.push(s);
-      }
-    } else {
-      const wl = WL_TABLE[wavelengthNm];
+    let list;
+    if (mode === 'full') list = [380, 450, 550, 650, 780];
+    else if (mode === 'white') list = [450, 550, 650];
+    else list = [wavelengthNm];
+
+    for (const nm of list) {
+      const wl = WL_TABLE[nm];
+      if (!wl) continue;
       const s = new FDTD(NX, NZ);
-      s.wavelengthNm = wl.nm;
-      s.color = wavelengthToRGB(wl.nm);
+      s.wavelengthNm = nm;
+      s.label = wl.label;
+      s.color = wavelengthToRGB(nm);
       s.source = makeSource(wl.freq);
-      s.setEpsilon((i, j) => scenarios[scenarioName](i, j, NX, NZ));
+      s.setEpsilon((i, j) => {
+        const base = scenarios[scenarioName](i, j, NX, NZ);
+        if (base === 1) return 1;
+        return 1 + (base - 1) * (wl.eps / 4.0);
+      });
       sims.push(s);
     }
   }
@@ -423,16 +424,32 @@ class Orchestrator {
 
   const api = {
     getFields() {
-      return sims.map(s => ({ field: s.ez, nx: s.nx, nz: s.nz, color: s.color, wavelength: s.wavelengthNm }));
+      return sims.map(s => ({
+        field: s.ez, nx: s.nx, nz: s.nz,
+        color: s.color, wavelength: s.wavelengthNm, label: s.label,
+      }));
+    },
+    getFieldsByWavelength() {
+      const out = {};
+      for (const s of sims) {
+        out[s.wavelengthNm] = {
+          field: s.ez, nx: s.nx, nz: s.nz,
+          color: s.color, label: s.label, wavelengthNm: s.wavelengthNm,
+        };
+      }
+      return out;
     },
     setScenario(name) { scenarioName = name; buildSims(); },
-    setWavelength(nm) { wavelengthNm = nm; buildSims(); },
+    setWavelength(nm) { wavelengthNm = nm; mode = 'mono'; buildSims(); },
     setMode(m) { mode = m; buildSims(); },
+    setModeFull() { mode = 'full'; buildSims(); },
     setRunning(r) { running = r; },
+    isRunning() { return running; },
     reset() { resetSims(); },
     getScenario() { return scenarioName; },
     getMode() { return mode; },
     getWavelength() { return wavelengthNm; },
+    getActiveWavelengths() { return sims.map(s => s.wavelengthNm); },
   };
 
   ModuleRegistry.add('em-motor', {
@@ -447,6 +464,8 @@ class Orchestrator {
           Resuelve las ecuaciones de Maxwell en 2D sobre un grid escalonado. Genera el campo
           electromagnético que los demás módulos usan. Por sí solo no dibuja nada: expone el
           campo a quien lo pida. Los controles de abajo modifican el medio y la fuente.
+          El modo "espectro completo" activa 5 longitudes de onda (UV, azul, verde, rojo, IR)
+          para que el módulo de ojo animal tenga material con el que trabajar.
         </div>
         <div class="controls" id="scenario-controls">
           <button data-scenario="vacio">Vacío</button>
@@ -455,8 +474,9 @@ class Orchestrator {
           <button data-scenario="lente">Lente</button>
         </div>
         <div class="controls" id="mode-controls">
-          <button data-mode="mono" class="active">Luz monocromática</button>
+          <button data-mode="mono" class="active">Monocromático</button>
           <button data-mode="white">Luz blanca (3 λ)</button>
+          <button data-mode="full">Espectro completo (5 λ)</button>
         </div>
         <div class="controls" id="wavelength-controls">
           <button data-wl="650">Rojo 650nm</button>
@@ -483,7 +503,7 @@ class Orchestrator {
         e.target.classList.add('active');
         api.setMode(e.target.dataset.mode);
         ctx.container.querySelector('#wavelength-controls').style.opacity =
-          e.target.dataset.mode === 'white' ? 0.4 : 1;
+          e.target.dataset.mode === 'mono' ? 1 : 0.4;
       });
       const wc = ctx.container.querySelector('#wavelength-controls');
       wc.addEventListener('click', (e) => {
@@ -491,6 +511,9 @@ class Orchestrator {
         wc.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         e.target.classList.add('active');
         api.setWavelength(parseInt(e.target.dataset.wl, 10));
+        // Al elegir λ, forzamos modo mono y actualizamos botones
+        mc.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.mode === 'mono'));
+        wc.style.opacity = 1;
       });
       ctx.container.querySelector('#em-reset').addEventListener('click', () => api.reset());
       const playBtn = ctx.container.querySelector('#em-play');
@@ -507,9 +530,9 @@ class Orchestrator {
       }
       const info = ctx.container.querySelector('#em-info');
       if (info) {
+        const wls = sims.map(s => s.wavelengthNm + 'nm').join(', ');
         info.textContent =
-          `Escenario: ${scenarioName} · Modo: ${mode} · ` +
-          (mode === 'mono' ? `λ = ${wavelengthNm} nm · ` : `3 longitudes de onda · `) +
+          `Escenario: ${scenarioName} · Modo: ${mode} · λ activas: [${wls}] · ` +
           `Grid ${NX}×${NZ} · t = ${sims[0]?.time.toFixed(2) || 0}`;
       }
     },
@@ -519,8 +542,9 @@ class Orchestrator {
 // ============================================================================
 // SECCIÓN 4 — MÓDULO: em-color
 // ============================================================================
-// Lee el campo del motor EM y lo pinta en color.
-// Enseña que la onda tiene frecuencia, pero el color lo pone el observador.
+// Lee el campo del motor EM y lo pinta como lo vería un ojo humano.
+// Usa las longitudes de onda visibles (450, 550, 650) si están disponibles.
+// Si no lo están, cae al modo mono.
 
 (() => {
   let canvas, ctx2d, imageData, offscreen, offCtx;
@@ -545,7 +569,8 @@ class Orchestrator {
         <div class="desc">
           El motor EM produce <em>frecuencias</em>. El <strong>color</strong> no está en la onda:
           está en el ojo que la mira. Este módulo aplica la conversión longitud de onda → RGB
-          que aproxima la respuesta de los conos humanos.
+          que aproxima la respuesta de los conos humanos. Si el motor está en modo espectro
+          completo, aquí solo se muestran las tres longitudes visibles (azul, verde, rojo).
         </div>
         <canvas id="em-color-canvas"></canvas>
         <div class="canvas-toolbar">
@@ -568,11 +593,15 @@ class Orchestrator {
       const fields = motor.getFields();
       if (!fields.length) return;
 
-      ensureCanvas(fields[0].nx, fields[0].nz);
+      // Filtrar a las longitudes visibles si el motor tiene más
+      const visible = fields.filter(f => [450, 550, 650].includes(f.wavelength));
+      const toDraw = visible.length > 0 ? visible : fields;
+
+      ensureCanvas(toDraw[0].nx, toDraw[0].nz);
       const data = imageData.data;
 
       let maxV = 1e-20;
-      for (const f of fields) {
+      for (const f of toDraw) {
         for (let k = 0; k < f.field.length; k++) {
           const a = Math.abs(f.field[k]);
           if (a > maxV) maxV = a;
@@ -580,9 +609,10 @@ class Orchestrator {
       }
       const inv = 1 / maxV;
 
-      for (let k = 0; k < fields[0].field.length; k++) {
+      const N = toDraw[0].field.length;
+      for (let k = 0; k < N; k++) {
         let r = 0, g = 0, b = 0;
-        for (const f of fields) {
+        for (const f of toDraw) {
           const v = Math.min(1, Math.abs(f.field[k]) * inv);
           r += f.color[0] * v;
           g += f.color[1] * v;
@@ -600,10 +630,9 @@ class Orchestrator {
 
       const info = c.container.querySelector('#color-info');
       if (info) {
-        const mode = motor.getMode();
-        info.textContent = mode === 'white'
-          ? `Modo luz blanca: 3 simulaciones superpuestas (R 650nm, G 550nm, B 450nm)`
-          : `Modo monocromático: λ = ${motor.getWavelength()} nm → RGB [${wavelengthToRGB(motor.getWavelength()).join(', ')}]`;
+        const wls = toDraw.map(f => f.wavelength + 'nm').join(', ');
+        info.textContent = `Longitudes visibles usadas: ${wls} · ` +
+          `modo motor: ${motor.getMode()}`;
       }
     },
   });
@@ -613,35 +642,18 @@ class Orchestrator {
 // SECCIÓN 5 — MÓDULO: percepcion
 // ============================================================================
 // Simula cómo ve el mundo una persona con distintas condiciones visuales.
-// Trabaja con imágenes. Permite comparar, ajustar severidad, probar
-// compensaciones, alternar A/B y descargar el resultado.
-//
-// Condiciones:
-//   - Normal
-//   - Degeneración macular seca (borrón + mancha central)
-//   - Degeneración macular húmeda (distorsión + mancha)
-//   - Glaucoma (visión en túnel)
-//   - Cataratas (borrón + tinte amarillento)
-//   - Retinosis pigmentaria (pérdida de periferia)
-//   - Daltonismo (protanopia / deuteranopia / tritanopia)
-//   - Hemianopsia (izquierda o derecha)
-//   - Retinopatía diabética (manchas dispersas)
-//   - Astigmatismo (borrón direccional)
-//
-// Aviso: educativo. No es diagnóstico ni producto sanitario.
+// Trabaja con imágenes. Diez condiciones. Comparación lado a lado, slider
+// de severidad, toggle de compensación, modo parpadeo A/B, descarga PNG.
 
 (() => {
   // ------------------------------------------------------------------
   // GENERACIÓN DE LA ESCENA DE PRUEBA
   // ------------------------------------------------------------------
-  // Incluye paisaje, cara y texto, MÁS una tira de parches de color
-  // saturados y círculos tipo Ishihara para hacer visible el daltonismo.
   function generateScene(w, h) {
     const cv = document.createElement('canvas');
     cv.width = w; cv.height = h;
     const g = cv.getContext('2d');
 
-    // Cielo degradado
     const sky = g.createLinearGradient(0, 0, 0, h * 0.62);
     sky.addColorStop(0, '#5B9BD5');
     sky.addColorStop(0.7, '#B8D4E8');
@@ -649,11 +661,9 @@ class Orchestrator {
     g.fillStyle = sky;
     g.fillRect(0, 0, w, h * 0.62);
 
-    // Sol
     g.fillStyle = '#FFD966';
     g.beginPath(); g.arc(w * 0.82, h * 0.13, Math.min(w, h) * 0.05, 0, Math.PI * 2); g.fill();
 
-    // Montañas
     g.fillStyle = '#6B5B4A';
     g.beginPath();
     g.moveTo(0, h * 0.62);
@@ -667,11 +677,9 @@ class Orchestrator {
     g.lineTo(w, h * 0.62);
     g.closePath(); g.fill();
 
-    // Suelo
     g.fillStyle = '#7CB342';
     g.fillRect(0, h * 0.62, w, h * 0.38);
 
-    // Casa
     g.fillStyle = '#F5DEB3';
     g.fillRect(w * 0.22, h * 0.6, w * 0.16, h * 0.22);
     g.fillStyle = '#A0522D';
@@ -685,14 +693,12 @@ class Orchestrator {
     g.fillStyle = '#81D4FA';
     g.fillRect(w * 0.24, h * 0.66, w * 0.03, h * 0.03);
 
-    // Árbol
     g.fillStyle = '#5D4037';
     g.fillRect(w * 0.72, h * 0.66, w * 0.02, h * 0.16);
     g.fillStyle = '#2E7D32';
     g.beginPath(); g.arc(w * 0.73, h * 0.6, w * 0.06, 0, Math.PI * 2); g.fill();
     g.beginPath(); g.arc(w * 0.68, h * 0.63, w * 0.045, 0, Math.PI * 2); g.fill();
 
-    // Cara simplificada
     const faceX = w * 0.5, faceY = h * 0.5, faceR = Math.min(w, h) * 0.08;
     g.fillStyle = '#FFCC99';
     g.beginPath(); g.arc(faceX, faceY, faceR, 0, Math.PI * 2); g.fill();
@@ -702,24 +708,18 @@ class Orchestrator {
     g.strokeStyle = '#000'; g.lineWidth = 2;
     g.beginPath(); g.arc(faceX, faceY + faceR * 0.1, faceR * 0.5, 0.2, Math.PI - 0.2); g.stroke();
 
-    // Texto de prueba
     g.fillStyle = '#FFFFFF';
     g.font = `bold ${Math.round(h * 0.06)}px sans-serif`;
     g.fillText('TEXTO', w * 0.05, h * 0.95);
     g.font = `${Math.round(h * 0.04)}px sans-serif`;
     g.fillText('abc 123', w * 0.45, h * 0.95);
 
-    // ----- TIRA DE PARCHES DE COLOR SATURADOS (para daltonismo) -----
-    // Estos son los colores que un daltónico confunde y un no-daltónico no.
+    // Parches de color saturados
     const patchesY = h * 0.86;
     const patchH = h * 0.08;
     const patches = [
-      { color: '#FF0000', label: 'rojo' },
-      { color: '#00A000', label: 'verde' },
-      { color: '#FF8000', label: 'naranja' },
-      { color: '#8000FF', label: 'violeta' },
-      { color: '#00FFFF', label: 'cian' },
-      { color: '#808000', label: 'oliva' },
+      { color: '#FF0000' }, { color: '#00A000' }, { color: '#FF8000' },
+      { color: '#8000FF' }, { color: '#00FFFF' }, { color: '#808000' },
     ];
     const patchW = (w * 0.5) / patches.length;
     patches.forEach((p, i) => {
@@ -727,27 +727,22 @@ class Orchestrator {
       g.fillRect(w * 0.02 + i * patchW, patchesY, patchW - 2, patchH);
     });
 
-    // ----- CÍRCULOS ISHIHARA SIMPLIFICADOS -----
-    // Cada círculo: fondo de color con número en otro color que un daltónico
-    // no distingue del fondo. Al daltónico le parecerá vacío o ilegible.
+    // Círculos Ishihara simplificados
     const ishiY = h * 0.86 + h * 0.04;
     const ishiR = h * 0.055;
     const ishiPositions = [
-      { x: w * 0.62, bg: '#8B4513', fg: '#7CB342' }, // marrón/verde
-      { x: w * 0.78, bg: '#FF6347', fg: '#556B2F' }, // rojo/verde oscuro
-      { x: w * 0.94, bg: '#4169E1', fg: '#9932CC' }, // azul/violeta
+      { x: w * 0.62, bg: '#8B4513', fg: '#7CB342', n: '5' },
+      { x: w * 0.78, bg: '#FF6347', fg: '#556B2F', n: '3' },
+      { x: w * 0.94, bg: '#4169E1', fg: '#9932CC', n: '7' },
     ];
-    const nums = ['5', '3', '7'];
-    ishiPositions.forEach((p, i) => {
+    ishiPositions.forEach(p => {
       g.fillStyle = p.bg;
       g.beginPath(); g.arc(p.x, ishiY, ishiR, 0, Math.PI * 2); g.fill();
       g.fillStyle = p.fg;
       g.font = `bold ${Math.round(ishiR * 1.2)}px sans-serif`;
-      g.textAlign = 'center';
-      g.textBaseline = 'middle';
-      g.fillText(nums[i], p.x, ishiY);
-      g.textAlign = 'start';
-      g.textBaseline = 'alphabetic';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(p.n, p.x, ishiY);
+      g.textAlign = 'start'; g.textBaseline = 'alphabetic';
     });
 
     return cv;
@@ -756,14 +751,9 @@ class Orchestrator {
   // ------------------------------------------------------------------
   // FILTROS
   // ------------------------------------------------------------------
-  // Cada filtro recibe (g, w, h, sev 0-100, comp bool, subtype string)
-  // y modifica el canvas g in-place.
-  // ------------------------------------------------------------------
-
   const filters = {
     normal() { /* nada */ },
 
-    // Degeneración macular seca: borrón central + mancha oscura
     'macular-seca'(g, w, h, sev, comp) {
       const s = sev / 100;
       const cx = w / 2, cy = h / 2;
@@ -793,7 +783,6 @@ class Orchestrator {
       }
     },
 
-    // Degeneración macular húmeda: distorsión (metamorfopsia) + mancha
     'macular-humeda'(g, w, h, sev, comp) {
       const s = sev / 100;
       const cx = w / 2, cy = h / 2;
@@ -846,7 +835,6 @@ class Orchestrator {
       }
     },
 
-    // Glaucoma: pérdida de periferia, visión en túnel
     glaucoma(g, w, h, sev, comp) {
       const s = sev / 100;
       const cx = w / 2, cy = h / 2;
@@ -869,7 +857,6 @@ class Orchestrator {
       }
     },
 
-    // Cataratas: borrón + tinte amarillento + menos contraste
     cataratas(g, w, h, sev, comp) {
       const s = sev / 100;
       if (s > 0.05) {
@@ -894,7 +881,6 @@ class Orchestrator {
       }
     },
 
-    // Retinosis pigmentaria: pérdida progresiva de periferia
     retinosis(g, w, h, sev, comp) {
       const s = sev / 100;
       const cx = w / 2, cy = h / 2;
@@ -918,7 +904,6 @@ class Orchestrator {
       }
     },
 
-    // Daltonismo: matrices de simulación + mezcla con identidad según severidad
     daltonismo(g, w, h, sev, comp, subtype) {
       const s = sev / 100;
       const img = g.getImageData(0, 0, w, h);
@@ -942,7 +927,6 @@ class Orchestrator {
       }
       g.putImageData(img, 0, 0);
       if (comp) {
-        // Compensación aproximada: aumentar separación entre canales R y G
         const img2 = g.getImageData(0, 0, w, h);
         const d2 = img2.data;
         const boost = 1.4;
@@ -954,7 +938,6 @@ class Orchestrator {
       }
     },
 
-    // Hemianopsia: pérdida de mitad del campo visual (izquierda o derecha)
     hemianopsia(g, w, h, sev, comp, subtype) {
       const s = sev / 100;
       const side = subtype || 'derecha';
@@ -973,10 +956,8 @@ class Orchestrator {
       }
     },
 
-    // Retinopatía diabética: manchas dispersas (microaneurismas / hemorragias)
     'retinopatia'(g, w, h, sev, comp) {
       const s = sev / 100;
-      // Generador determinista simple para que las manchas no cambien cada frame
       let seed = 12345;
       const rand = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
       const n = Math.round(8 + 30 * s);
@@ -999,7 +980,6 @@ class Orchestrator {
       }
     },
 
-    // Astigmatismo: borrón direccional (horizontal o vertical)
     astigmatismo(g, w, h, sev, comp, subtype) {
       const s = sev / 100;
       if (s < 0.05) return;
@@ -1007,7 +987,6 @@ class Orchestrator {
       const snap = document.createElement('canvas');
       snap.width = w; snap.height = h;
       snap.getContext('2d').drawImage(g.canvas, 0, 0);
-      // Borrón por convolución simple: muchas copias desplazadas
       g.save();
       g.globalAlpha = 1 / 12;
       const pixels = 2 + s * 10;
@@ -1027,15 +1006,11 @@ class Orchestrator {
     },
   };
 
-  // ------------------------------------------------------------------
-  // ESTADO Y RENDER
-  // ------------------------------------------------------------------
-
   const STATE = {
     condition: 'normal',
     severity: 50,
     compensation: false,
-    daltonSubtype: 'tritanopia', // arranca con la que más se nota
+    daltonSubtype: 'tritanopia',
     hemianSubtype: 'derecha',
     astigSubtype: 'horizontal',
     sourceCanvas: null,
@@ -1043,21 +1018,12 @@ class Orchestrator {
     flickerInterval: null,
   };
 
-  // Severidad recomendada por condición al entrar
   const RECOMMENDED_SEVERITY = {
-    normal: 0,
-    'macular-seca': 50,
-    'macular-humeda': 50,
-    glaucoma: 60,
-    cataratas: 55,
-    retinosis: 60,
-    daltonismo: 90,
-    hemianopsia: 70,
-    retinopatia: 55,
-    astigmatismo: 45,
+    normal: 0, 'macular-seca': 50, 'macular-humeda': 50, glaucoma: 60,
+    cataratas: 55, retinosis: 60, daltonismo: 90, hemianopsia: 70,
+    retinopatia: 55, astigmatismo: 45,
   };
 
-  // Nombre humano de cada condición
   const COND_NAMES = {
     normal: 'Normal',
     'macular-seca': 'Degeneración macular (seca)',
@@ -1091,9 +1057,7 @@ class Orchestrator {
             : cond === 'astigmatismo' ? STATE.astigSubtype
             : undefined
         );
-      } catch (e) {
-        console.error('Error al aplicar filtro:', e);
-      }
+      } catch (e) { console.error('Error al aplicar filtro:', e); }
     }
 
     let subtitle = '';
@@ -1137,7 +1101,6 @@ class Orchestrator {
     nombre: '👁 Percepción visual',
     depende: [],
     activoPorDefecto: true,
-
     mount(c) {
       c.container.innerHTML = `
         <h2>👁 Percepción visual — condiciones y compensación</h2>
@@ -1204,7 +1167,6 @@ class Orchestrator {
         </div>
       `;
 
-      // Escena
       const sceneW = 480, sceneH = 320;
       STATE.sourceCanvas = generateScene(sceneW, sceneH);
 
@@ -1214,7 +1176,6 @@ class Orchestrator {
       cn.height = cs.height = sceneH;
       cn.getContext('2d').drawImage(STATE.sourceCanvas, 0, 0);
 
-      // Controles de condición
       const cc = c.container.querySelector('#cond-controls');
       const dc = c.container.querySelector('#dalton-controls');
       const hc = c.container.querySelector('#hemian-controls');
@@ -1227,7 +1188,6 @@ class Orchestrator {
         dc.style.display = STATE.condition === 'daltonismo' ? 'flex' : 'none';
         hc.style.display = STATE.condition === 'hemianopsia' ? 'flex' : 'none';
         ac.style.display = STATE.condition === 'astigmatismo' ? 'flex' : 'none';
-        // Aplicar severidad recomendada
         const rec = RECOMMENDED_SEVERITY[STATE.condition];
         if (rec !== undefined && STATE.condition !== 'normal') {
           STATE.severity = rec;
@@ -1236,8 +1196,6 @@ class Orchestrator {
         }
         renderSim(c);
       });
-
-      // Submenús
       dc.addEventListener('click', (e) => {
         if (!e.target.dataset.sub) return;
         dc.querySelectorAll('button').forEach(b => b.classList.remove('active'));
@@ -1259,8 +1217,6 @@ class Orchestrator {
         STATE.astigSubtype = e.target.dataset.sub;
         renderSim(c);
       });
-
-      // Severidad
       const sev = c.container.querySelector('#severity');
       const sevVal = c.container.querySelector('#severity-value');
       sev.addEventListener('input', () => {
@@ -1268,15 +1224,11 @@ class Orchestrator {
         sevVal.textContent = STATE.severity;
         renderSim(c);
       });
-
-      // Compensación
       const comp = c.container.querySelector('#comp-toggle');
       comp.addEventListener('change', () => {
         STATE.compensation = comp.checked;
         renderSim(c);
       });
-
-      // Parpadeo A/B
       const flickerBtn = c.container.querySelector('#btn-flicker');
       flickerBtn.addEventListener('click', () => {
         if (STATE.flickering) {
@@ -1289,8 +1241,6 @@ class Orchestrator {
           flickerBtn.textContent = '⏸ Detener parpadeo';
         }
       });
-
-      // Descarga PNG
       c.container.querySelectorAll('[data-png]').forEach(btn => {
         btn.addEventListener('click', () => {
           const target = c.container.querySelector('#' + btn.dataset.png);
@@ -1300,12 +1250,9 @@ class Orchestrator {
           a.click();
         });
       });
-
       renderSim(c);
     },
-
     unmount() {
-      // Limpiar el interval del parpadeo si seguía activo
       if (STATE.flickerInterval) {
         clearInterval(STATE.flickerInterval);
         STATE.flickerInterval = null;
@@ -1316,10 +1263,363 @@ class Orchestrator {
 })();
 
 // ============================================================================
+// SECCIÓN 5b — MÓDULO: ojo-animal
+// ============================================================================
+// Lee el campo EM en 5 longitudes (UV, azul, verde, rojo, IR) y lo traduce
+// a "lo que vería" cada animal, según su tabla de sensibilidad espectral.
+//
+// IMPORTANTE: esto NO simula lo que ve el animal. No podemos saberlo.
+// Simula lo que PODEMOS TRADUCIR de su espectro a algo que un ojo humano
+// pueda mirar. Cada canal del animal se proyecta a un color RGB
+// representativo. Es traducción, no experiencia.
+
+(() => {
+  const ANIMALS = {
+    humano: {
+      nombre: 'Humano',
+      tipo: 'Tricromático',
+      desc: 'Tres conos: S (~420nm), M (~530nm), L (~560nm). Es nuestra referencia.',
+      channels: [
+        { name: 'S azul',  weights: { 380: 0.3, 450: 1.0, 550: 0.1 }, rgb: [  0,   0, 255] },
+        { name: 'M verde', weights: { 450: 0.3, 550: 1.0, 650: 0.2 }, rgb: [  0, 255,   0] },
+        { name: 'L rojo',  weights: { 550: 0.4, 650: 1.0, 780: 0.1 }, rgb: [255,   0,   0] },
+      ],
+      note: 'Referencia. Lo que vemos todos los días.',
+    },
+
+    perro: {
+      nombre: 'Perro',
+      tipo: 'Dicromático',
+      desc: 'Dos conos: uno azul-violeta (~430nm) y uno amarillo (~555nm). No distingue rojo de verde.',
+      channels: [
+        { name: 'Cono corto azul',     weights: { 380: 0.4, 450: 1.0, 550: 0.1 }, rgb: [  0,   0, 255] },
+        { name: 'Cono largo amarillo', weights: { 450: 0.2, 550: 1.0, 650: 0.7, 780: 0.1 }, rgb: [255, 220,   0] },
+      ],
+      note: 'El perro ve azul y amarillo. Un juguete rojo lo ve como amarillo oscuro. Un juguete verde, también. Aquí traducimos "amarillo" a amarillo visible.',
+    },
+
+    gato: {
+      nombre: 'Gato',
+      tipo: 'Dicromático + nocturno',
+      desc: 'Similar al perro, pero con muchos más bastones. Ve muy bien en penumbra.',
+      channels: [
+        { name: 'Cono corto', weights: { 380: 0.4, 450: 1.0, 550: 0.1 }, rgb: [  0,   0, 255] },
+        { name: 'Cono largo', weights: { 450: 0.2, 550: 1.0, 650: 0.8, 780: 0.1 }, rgb: [255, 200,   0] },
+      ],
+      note: 'Su ventaja no es el color, es la sensibilidad. Este módulo no simula la ganancia nocturna: solo su espectro.',
+    },
+
+    abeja: {
+      nombre: 'Abeja',
+      tipo: 'Tricromático UV+azul+verde',
+      desc: 'Tres conos: UV (~345nm), azul (~440nm), verde (~540nm). No ve rojo.',
+      channels: [
+        { name: 'UV',    weights: { 380: 1.0, 450: 0.2 }, rgb: [255,   0, 255] },
+        { name: 'Azul',  weights: { 380: 0.1, 450: 1.0, 550: 0.2 }, rgb: [  0,   0, 255] },
+        { name: 'Verde', weights: { 450: 0.3, 550: 1.0, 650: 0.2 }, rgb: [  0, 255,   0] },
+      ],
+      note: 'El UV está desplazado a MAGENTA. No es lo que ve la abeja: es la marca de una señal que tú no percibes. Las flores que nos parecen uniformes tienen guías de néctar que solo ella ve.',
+    },
+
+    ave: {
+      nombre: 'Ave (colibrí, paseriforme)',
+      tipo: 'Tetracromático',
+      desc: 'Cuatro conos: UV/violeta (~370nm), azul, verde, rojo. Además, gotas de aceite que afinan la sensibilidad.',
+      channels: [
+        { name: 'UV',    weights: { 380: 1.0, 450: 0.3 }, rgb: [255,   0, 255] },
+        { name: 'Azul',  weights: { 380: 0.1, 450: 1.0, 550: 0.2 }, rgb: [  0,   0, 255] },
+        { name: 'Verde', weights: { 450: 0.3, 550: 1.0, 650: 0.2 }, rgb: [  0, 255,   0] },
+        { name: 'Rojo',  weights: { 550: 0.3, 650: 1.0, 780: 0.4 }, rgb: [255,   0,   0] },
+      ],
+      note: 'Cuatro canales, tres colores RGB. Es una PROYECCIÓN inevitable. El UV va a magenta como marca. No podemos imaginar su espacio de color: tiene una dimensión más que el nuestro.',
+    },
+
+    buho: {
+      nombre: 'Búho',
+      tipo: 'Monocromático',
+      desc: 'Prácticamente sin conos. Ve en blanco y negro, pero con enorme sensibilidad y agudeza en penumbra.',
+      channels: [
+        { name: 'Bastones', weights: { 380: 0.1, 450: 0.6, 550: 1.0, 650: 0.5, 780: 0.1 }, rgb: [255, 255, 255] },
+      ],
+      note: 'La noche no es "oscura": es gris. Lo que tú ves mal, él lo ve bien, pero sin color.',
+    },
+
+    rata: {
+      nombre: 'Rata',
+      tipo: 'Dicromático UV+verde',
+      desc: 'Dos conos: UV (~360nm) y verde (~510nm). No ve rojo.',
+      channels: [
+        { name: 'UV',    weights: { 380: 1.0, 450: 0.2 }, rgb: [255,   0, 255] },
+        { name: 'Verde', weights: { 380: 0.1, 450: 0.4, 550: 1.0, 650: 0.2 }, rgb: [  0, 255,   0] },
+      ],
+      note: 'Ve el UV. La orina de otros roedores brilla con UV y les sirve de "mensaje" visual. Aquí lo ves magenta.',
+    },
+
+    pulpo: {
+      nombre: 'Pulpo',
+      tipo: 'Monocromático',
+      desc: 'A pesar de su piel compleja, los pulpos tienen un solo tipo de fotorreceptor. Ven en escala de grises.',
+      channels: [
+        { name: 'Único', weights: { 380: 0.2, 450: 1.0, 550: 0.9, 650: 0.4, 780: 0.05 }, rgb: [230, 230, 230] },
+      ],
+      note: 'El pulpo ve sin color. Su camuflaje espectacular no depende del color: depende de la textura y la luz. Los colores que produce su piel son para los depredadores, no para él.',
+    },
+
+    camaleon: {
+      nombre: 'Camaleón',
+      tipo: 'Tetracromático probable',
+      desc: 'Probablemente cuatro conos, similar a aves y reptiles. Su visión es muy aguda y estereoscópica.',
+      channels: [
+        { name: 'UV',    weights: { 380: 1.0, 450: 0.3 }, rgb: [255,   0, 255] },
+        { name: 'Azul',  weights: { 380: 0.1, 450: 1.0, 550: 0.2 }, rgb: [  0,   0, 255] },
+        { name: 'Verde', weights: { 450: 0.3, 550: 1.0, 650: 0.2 }, rgb: [  0, 255,   0] },
+        { name: 'Rojo',  weights: { 550: 0.4, 650: 1.0, 780: 0.3 }, rgb: [255,   0,   0] },
+      ],
+      note: 'El color de su piel y lo que ve su ojo son dos cosas distintas. Su piel cambia por temperatura y emoción, no por imitar el fondo.',
+    },
+
+    mantis: {
+      nombre: 'Mantis religiosa',
+      tipo: 'Doce+ canales · caso límite',
+      desc: 'Doce o más tipos de fotorreceptores. También detecta polarización circular. No sabemos cómo procesa eso.',
+      channels: [
+        { name: 'UV',      weights: { 380: 1.0, 450: 0.2 }, rgb: [255,   0, 255] },
+        { name: 'Visible', weights: { 450: 0.8, 550: 1.0, 650: 0.8, 780: 0.3 }, rgb: [255, 255, 255] },
+        { name: 'Marca',   weights: { 380: 0.5, 450: 0.5, 550: 0.5, 650: 0.5, 780: 0.5 }, rgb: [ 80, 255, 200] },
+      ],
+      note: 'CASO LÍMITE. Sabemos que tiene 12 tipos de fotorreceptores. No sabemos qué ve con ellos. Aquí mostramos 3 canales como aproximación grosera. El color turquesa marca "hay información aquí que ni siquiera podemos nombrar". La mantis también ve polarización circular: otro canal que no tiene color.',
+    },
+
+    serpiente: {
+      nombre: 'Serpiente de fosa',
+      tipo: 'Visión térmica + visible',
+      desc: 'Ve el infrarrojo con órganos especiales (fosas loreales), separados de los ojos. Es otra modalidad sensorial, no un color más.',
+      channels: [
+        { name: 'Visual',   weights: { 450: 0.6, 550: 1.0, 650: 0.8 }, rgb: [180, 220, 255] },
+        { name: 'Térmico',  weights: { 780: 1.0 }, rgb: [255,  80,   0] },
+      ],
+      note: 'La "visión térmica" no es color. Es un mapa de calor superpuesto. Aquí lo pintamos en naranja para que veas la idea: hay dos mapas del mundo superpuestos, uno visible y otro infrarrojo.',
+    },
+  };
+
+  function translateField(fieldsByWl, animal, outImageData, w, h) {
+    const channels = animal.channels;
+    const nCh = channels.length;
+    const data = outImageData.data;
+    const N = w * h;
+
+    const pixBuf = new Float32Array(N * nCh);
+    let maxV = 1e-20;
+
+    for (let ch = 0; ch < nCh; ch++) {
+      const chan = channels[ch];
+      for (const nmStr in chan.weights) {
+        const w_ = chan.weights[nmStr];
+        if (w_ === 0) continue;
+        const nm = parseInt(nmStr, 10);
+        const f = fieldsByWl[nm];
+        if (!f) continue;
+        const field = f.field;
+        for (let k = 0; k < N; k++) {
+          const v = Math.abs(field[k]);
+          pixBuf[k * nCh + ch] += v * w_;
+          if (pixBuf[k * nCh + ch] > maxV) maxV = pixBuf[k * nCh + ch];
+        }
+      }
+    }
+    const inv = 1 / maxV;
+
+    for (let k = 0; k < N; k++) {
+      let r = 0, g = 0, b = 0;
+      for (let ch = 0; ch < nCh; ch++) {
+        const val = pixBuf[k * nCh + ch] * inv;
+        if (val <= 0.001) continue;
+        const rgb = channels[ch].rgb;
+        r += rgb[0] * val;
+        g += rgb[1] * val;
+        b += rgb[2] * val;
+      }
+      const p = k * 4;
+      data[p]     = Math.min(255, r);
+      data[p + 1] = Math.min(255, g);
+      data[p + 2] = Math.min(255, b);
+      data[p + 3] = 255;
+    }
+  }
+
+  let canvasA, canvasB, ctxA, ctxB;
+  let imgA, imgB;
+  let offA, offB, offCtxA, offCtxB;
+  let currentAnimal = 'abeja';
+
+  function ensureBuffers(w, h) {
+    if (!offA || offA.width !== w) {
+      offA = document.createElement('canvas');
+      offA.width = w; offA.height = h;
+      offCtxA = offA.getContext('2d');
+      imgA = offCtxA.createImageData(w, h);
+      offB = document.createElement('canvas');
+      offB.width = w; offB.height = h;
+      offCtxB = offB.getContext('2d');
+      imgB = offCtxB.createImageData(w, h);
+    }
+  }
+
+  ModuleRegistry.add('ojo-animal', {
+    nombre: '🦅 Ojo animal',
+    depende: ['em-motor'],
+    activoPorDefecto: false,
+    api: {
+      getAnimals() { return ANIMALS; },
+      getCurrentAnimal() { return currentAnimal; },
+    },
+
+    mount(c) {
+      const motor = c.deps['em-motor'];
+      if (motor && motor.setModeFull) motor.setModeFull();
+
+      c.container.innerHTML = `
+        <h2>🦅 Ojo animal — el mismo mundo, otra representación</h2>
+        <div class="desc">
+          El motor EM produce un campo real. La <strong>percepción</strong> de ese campo
+          depende del sistema visual que lo mira. Aquí traducimos el mismo campo a lo
+          que vería un ojo no humano. <strong>No es lo que ve el animal</strong>: no podemos
+          saberlo. Es lo que <em>podemos traducir</em> de su espectro a algo que tú puedas mirar.
+          Cada canal del animal se proyecta a un color RGB representativo. El UV se marca
+          en <span style="color:#f0f">magenta</span> para que veas que hay señal que tú no tienes.
+        </div>
+        <div class="controls" id="animal-controls"></div>
+        <div class="grid-2" style="margin-top:12px;">
+          <div>
+            <canvas id="canvas-human"></canvas>
+            <div class="comparison-label">Ojo humano (referencia)</div>
+            <div class="canvas-toolbar"><button data-png="canvas-human">💾 PNG</button></div>
+          </div>
+          <div>
+            <canvas id="canvas-animal"></canvas>
+            <div class="comparison-label" id="animal-label">Ojo animal</div>
+            <div class="canvas-toolbar"><button data-png="canvas-animal">💾 PNG</button></div>
+          </div>
+        </div>
+        <div class="info-line" id="animal-info">Elige un animal…</div>
+        <div class="info-line" id="animal-channels" style="margin-top:6px;"></div>
+      `;
+
+      const cc = c.container.querySelector('#animal-controls');
+      for (const id in ANIMALS) {
+        const btn = document.createElement('button');
+        btn.textContent = ANIMALS[id].nombre;
+        btn.dataset.animal = id;
+        if (id === currentAnimal) btn.classList.add('active');
+        btn.addEventListener('click', () => {
+          cc.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          currentAnimal = id;
+          updateLabels(c);
+        });
+        cc.appendChild(btn);
+      }
+
+      canvasA = c.container.querySelector('#canvas-human');
+      canvasB = c.container.querySelector('#canvas-animal');
+      ctxA = canvasA.getContext('2d');
+      ctxB = canvasB.getContext('2d');
+
+      c.container.querySelectorAll('[data-png]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const target = c.container.querySelector('#' + btn.dataset.png);
+          const a = document.createElement('a');
+          a.download = btn.dataset.png + '.png';
+          a.href = target.toDataURL('image/png');
+          a.click();
+        });
+      });
+
+      updateLabels(c);
+    },
+
+    frame(c) {
+      const motor = c.deps['em-motor'];
+      if (!motor) return;
+      const fieldsByWl = motor.getFieldsByWavelength();
+      const wls = Object.keys(fieldsByWl);
+      if (wls.length === 0) return;
+
+      const anyField = fieldsByWl[wls[0]];
+      const w = anyField.nx, h = anyField.nz;
+      ensureBuffers(w, h);
+
+      if (canvasA.width !== w) {
+        canvasA.width = canvasB.width = w;
+        canvasA.height = canvasB.height = h;
+      }
+
+      // Canvas A: humano (usando 450/550/650 si están)
+      const dataA = imgA.data;
+      const N = w * h;
+      let maxA = 1e-20;
+      for (const nm of ['450', '550', '650']) {
+        if (!fieldsByWl[nm]) continue;
+        const f = fieldsByWl[nm].field;
+        for (let k = 0; k < N; k++) {
+          const a = Math.abs(f[k]);
+          if (a > maxA) maxA = a;
+        }
+      }
+      const invA = 1 / maxA;
+      for (let k = 0; k < N; k++) {
+        let r = 0, g = 0, b = 0;
+        if (fieldsByWl['450']) {
+          const v = Math.min(1, Math.abs(fieldsByWl['450'].field[k]) * invA);
+          b += 255 * v;
+        }
+        if (fieldsByWl['550']) {
+          const v = Math.min(1, Math.abs(fieldsByWl['550'].field[k]) * invA);
+          g += 255 * v;
+        }
+        if (fieldsByWl['650']) {
+          const v = Math.min(1, Math.abs(fieldsByWl['650'].field[k]) * invA);
+          r += 255 * v;
+        }
+        const p = k * 4;
+        dataA[p] = r; dataA[p + 1] = g; dataA[p + 2] = b; dataA[p + 3] = 255;
+      }
+      offCtxA.putImageData(imgA, 0, 0);
+      ctxA.imageSmoothingEnabled = true;
+      ctxA.drawImage(offA, 0, 0, canvasA.width, canvasA.height);
+
+      // Canvas B: animal seleccionado
+      const animal = ANIMALS[currentAnimal];
+      translateField(fieldsByWl, animal, imgB, w, h);
+      offCtxB.putImageData(imgB, 0, 0);
+      ctxB.imageSmoothingEnabled = true;
+      ctxB.drawImage(offB, 0, 0, canvasB.width, canvasB.height);
+    },
+  });
+
+  function updateLabels(c) {
+    const animal = ANIMALS[currentAnimal];
+    const lbl = c.container.querySelector('#animal-label');
+    const info = c.container.querySelector('#animal-info');
+    const chInfo = c.container.querySelector('#animal-channels');
+
+    if (lbl) lbl.textContent = `${animal.nombre} — ${animal.tipo}`;
+    if (info) info.textContent = animal.desc + ' · ' + animal.note;
+    if (chInfo) {
+      chInfo.innerHTML = animal.channels
+        .map(ch => {
+          const r = ch.rgb[0], g = ch.rgb[1], b = ch.rgb[2];
+          return `<span style="display:inline-block;width:10px;height:10px;background:rgb(${r},${g},${b});border-radius:2px;margin-right:4px;vertical-align:middle;"></span>${ch.name}`;
+        })
+        .join(' · ');
+    }
+  }
+})();
+
+// ============================================================================
 // SECCIÓN 6 — TESTS
 // ============================================================================
 // Se ejecutan al cargar. Los resultados van a consola y a un panel abajo.
-// Cubren: utilidades, registro, orquestador, generación de escena y filtros.
 
 function runTests() {
   const results = [];
@@ -1328,9 +1628,6 @@ function runTests() {
     catch (e) { results.push({ name, ok: false, error: e.message }); }
   };
   const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
-  const approx = (a, b, tol, msg) => {
-    if (Math.abs(a - b) > tol) throw new Error(`${msg || ''} ${a} vs ${b} ±${tol}`);
-  };
 
   // ---- EventBus ----
   test('EventBus: on/emit recibe payload', () => {
@@ -1375,7 +1672,6 @@ function runTests() {
 
   // ---- ModuleRegistry ----
   test('ModuleRegistry: add/get/all', () => {
-    // Guardar y restaurar
     const saved = [...ModuleRegistry.all()];
     ModuleRegistry.clear();
     ModuleRegistry.add('test-a', { nombre: 'A' });
@@ -1383,64 +1679,21 @@ function runTests() {
     assert(ModuleRegistry.all().length === 2, 'no hay 2 módulos');
     assert(ModuleRegistry.get('test-a').nombre === 'A', 'get falla');
     assert(ModuleRegistry.get('no-existe') === undefined, 'get debería ser undefined');
-    // Restaurar
     ModuleRegistry.clear();
     for (const m of saved) ModuleRegistry.add(m.id, m);
   });
 
-  // ---- Filtros de percepción ----
-  // Comprobamos que ninguno peta y que produce algún cambio visible.
-  test('Filtro: normal no modifica la imagen', () => {
-    const cv = document.createElement('canvas');
-    cv.width = 60; cv.height = 40;
-    const g = cv.getContext('2d');
-    g.fillStyle = '#FF0000'; g.fillRect(0, 0, 60, 40);
-    const before = g.getImageData(0, 0, 60, 40).data.slice(0, 4);
-    // No llamamos a ningún filtro: control
-    const after = g.getImageData(0, 0, 60, 40).data.slice(0, 4);
-    assert(before[0] === after[0], 'no debería cambiar');
-  });
-
-  // Generamos una escena de prueba rápida para los filtros
-  function makeTinyScene() {
-    const cv = document.createElement('canvas');
-    cv.width = 80; cv.height = 60;
-    const g = cv.getContext('2d');
-    g.fillStyle = '#5B9BD5'; g.fillRect(0, 0, 80, 60);
-    g.fillStyle = '#FF0000'; g.fillRect(10, 10, 20, 20);
-    g.fillStyle = '#00A000'; g.fillRect(40, 10, 20, 20);
-    return cv;
-  }
-
-  // Lista de filtros y combinaciones a probar
-  const filterTests = [
-    { name: 'macular-seca', subtype: undefined },
-    { name: 'macular-humeda', subtype: undefined },
-    { name: 'glaucoma', subtype: undefined },
-    { name: 'cataratas', subtype: undefined },
-    { name: 'retinosis', subtype: undefined },
-    { name: 'daltonismo', subtype: 'protanopia' },
-    { name: 'daltonismo', subtype: 'deuteranopia' },
-    { name: 'daltonismo', subtype: 'tritanopia' },
-    { name: 'hemianopsia', subtype: 'izquierda' },
-    { name: 'hemianopsia', subtype: 'derecha' },
-    { name: 'retinopatia', subtype: undefined },
-    { name: 'astigmatismo', subtype: 'horizontal' },
-    { name: 'astigmatismo', subtype: 'vertical' },
-  ];
-
-  // Como los filtros están dentro de una IIFE, no son accesibles aquí.
-  // Lo que SÍ podemos comprobar es que el módulo percepcion se registró y
-  // que su mount no peta (lo hace el orquestador al arrancar).
-  test('Módulo percepción registrado correctamente', () => {
-    const mod = ModuleRegistry.get('percepcion');
-    assert(mod, 'módulo percepcion no registrado');
-    assert(typeof mod.mount === 'function', 'mount no es función');
-  });
-
-  test('Módulo percepcion no depende de otros', () => {
-    const mod = ModuleRegistry.get('percepcion');
-    assert((mod.depende || []).length === 0, 'no debería tener dependencias');
+  // ---- Módulos registrados ----
+  test('Módulo em-motor registrado con API completa', () => {
+    const mod = ModuleRegistry.get('em-motor');
+    assert(mod, 'em-motor no registrado');
+    assert(typeof mod.api.getFields === 'function', 'getFields ausente');
+    assert(typeof mod.api.getFieldsByWavelength === 'function', 'getFieldsByWavelength ausente');
+    assert(typeof mod.api.setScenario === 'function', 'setScenario ausente');
+    assert(typeof mod.api.setWavelength === 'function', 'setWavelength ausente');
+    assert(typeof mod.api.setMode === 'function', 'setMode ausente');
+    assert(typeof mod.api.setModeFull === 'function', 'setModeFull ausente');
+    assert(typeof mod.api.reset === 'function', 'reset ausente');
   });
 
   test('Módulo em-color depende de em-motor', () => {
@@ -1449,15 +1702,83 @@ function runTests() {
     assert(mod.depende.includes('em-motor'), 'falta dependencia');
   });
 
-  test('Módulo em-motor expone API', () => {
-    const mod = ModuleRegistry.get('em-motor');
-    assert(mod.api, 'sin api');
-    assert(typeof mod.api.getFields === 'function', 'getFields ausente');
-    assert(typeof mod.api.setScenario === 'function', 'setScenario ausente');
-    assert(typeof mod.api.reset === 'function', 'reset ausente');
+  test('Módulo percepcion registrado y autónomo', () => {
+    const mod = ModuleRegistry.get('percepcion');
+    assert(mod, 'percepcion no registrado');
+    assert((mod.depende || []).length === 0, 'no debería tener dependencias');
+    assert(typeof mod.mount === 'function', 'mount no es función');
   });
 
-  // ---- Impresión de resultados ----
+  test('Módulo ojo-animal depende de em-motor', () => {
+    const mod = ModuleRegistry.get('ojo-animal');
+    assert(mod, 'ojo-animal no registrado');
+    assert(mod.depende.includes('em-motor'), 'falta dependencia');
+    assert(typeof mod.api.getAnimals === 'function', 'getAnimals ausente');
+  });
+
+  // ---- Verificaciones sobre la tabla de animales ----
+  test('Tabla de animales: al menos 10 animales distintos', () => {
+    const mod = ModuleRegistry.get('ojo-animal');
+    const animals = mod.api.getAnimals();
+    const keys = Object.keys(animals);
+    assert(keys.length >= 10, `solo hay ${keys.length} animales`);
+  });
+
+  test('Cada animal tiene nombre, canales y nota', () => {
+    const mod = ModuleRegistry.get('ojo-animal');
+    const animals = mod.api.getAnimals();
+    for (const id in animals) {
+      const a = animals[id];
+      assert(a.nombre, `${id} sin nombre`);
+      assert(a.channels && a.channels.length > 0, `${id} sin canales`);
+      assert(a.note, `${id} sin nota`);
+      for (const ch of a.channels) {
+        assert(ch.name, `${id} tiene canal sin nombre`);
+        assert(ch.rgb && ch.rgb.length === 3, `${id}/${ch.name} sin rgb`);
+        assert(ch.weights, `${id}/${ch.name} sin weights`);
+      }
+    }
+  });
+
+  test('Ningún canal de animal tiene pesos todos a cero', () => {
+    const mod = ModuleRegistry.get('ojo-animal');
+    const animals = mod.api.getAnimals();
+    for (const id in animals) {
+      for (const ch of animals[id].channels) {
+        const sum = Object.values(ch.weights).reduce((a, b) => a + b, 0);
+        assert(sum > 0, `${id}/${ch.name} tiene todos los pesos a 0`);
+      }
+    }
+  });
+
+  // ---- Motor EM: cambio de modo ----
+  test('Motor EM: setModeFull y vuelta a mono no petan', () => {
+    const mod = ModuleRegistry.get('em-motor');
+    try {
+      mod.api.setModeFull();
+      const wlsFull = mod.api.getActiveWavelengths();
+      assert(wlsFull.length === 5, `modo full debería tener 5 λ, tiene ${wlsFull.length}`);
+      mod.api.setMode('mono');
+      mod.api.setWavelength(550);
+      const wlsMono = mod.api.getActiveWavelengths();
+      assert(wlsMono.length === 1, `modo mono debería tener 1 λ, tiene ${wlsMono.length}`);
+    } catch (e) {
+      throw new Error('setModeFull/setMode lanzó: ' + e.message);
+    }
+  });
+
+  test('Motor EM: modo white tiene 3 λ (450, 550, 650)', () => {
+    const mod = ModuleRegistry.get('em-motor');
+    mod.api.setMode('white');
+    const wls = mod.api.getActiveWavelengths();
+    assert(wls.length === 3, `white debería tener 3 λ, tiene ${wls.length}`);
+    assert(wls.includes(450) && wls.includes(550) && wls.includes(650),
+           `white debería incluir 450/550/650, incluye ${wls.join(',')}`);
+    mod.api.setMode('mono');
+    mod.api.setWavelength(550);
+  });
+
+  // ---- Impresión ----
   const okCount = results.filter(r => r.ok).length;
   const failCount = results.length - okCount;
   console.log(`\n=== TESTS: ${okCount}/${results.length} OK ===`);
@@ -1467,7 +1788,6 @@ function runTests() {
   });
   console.log('=== Fin de tests ===\n');
 
-  // Panel en el DOM
   const panel = document.getElementById('test-results');
   const list = document.getElementById('test-list');
   if (panel && list) {
