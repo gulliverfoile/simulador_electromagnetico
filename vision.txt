@@ -1,0 +1,493 @@
+═══════════════════════════════════════════════════════════════════════════
+  LABORATORIO DE LUZ Y VISIÓN
+  Módulos independientes · Arquitectura hexagonal · Un solo archivo
+═══════════════════════════════════════════════════════════════════════════
+
+
+1. QUÉ ES
+--------------------------------------------------------------------------------
+
+Un archivo HTML que reúne tres módulos independientes y combinables:
+
+  1. Motor electromagnético 2D (FDTD) — resuelve las ecuaciones de Maxwell.
+  2. Color — convierte el campo EM en color percibido por un ojo humano.
+  3. Percepción visual — simula cómo ve el mundo una persona con distintas
+     condiciones oculares.
+
+Los módulos no están integrados entre sí. Son independientes. Se activan y
+desactivan desde una barra superior. Algunos dependen de otros (color necesita
+el motor EM), pero ninguno conoce a los demás por dentro.
+
+La idea no es hacer un producto. Es hacer un laboratorio pequeño, honesto,
+donde se pueda ver con los ojos lo que a veces solo se lee:
+
+  - Que la luz es una onda electromagnética y se propaga como tal.
+  - Que el color NO está en la onda. La onda tiene frecuencia; el color
+    lo pone el ojo que la mira.
+  - Que distintas condiciones oculares producen distintas percepciones del
+    mismo mundo físico.
+
+Es, en el fondo, la misma pregunta que el analizador de texto y los
+simuladores de ondas: ¿qué es el mundo y qué es la representación que
+hacemos de él?
+
+
+2. QUÉ HACE
+--------------------------------------------------------------------------------
+
+MÓDULO 1 — MOTOR EM (FDTD)
+
+  - Resuelve Maxwell en 2D, modo TM (Ez, Hx, Hy), esquema de Yee.
+  - Grid escalonado con frontera absorbente (sponge).
+  - Cuatro escenarios: vacío, lámina dieléctrica, prisma, lente.
+  - Modo monocromático (una λ) o luz blanca (tres λ: R, G, B).
+  - Dispersión: el índice del dieléctrico cambia con la longitud de onda
+    (aproximación: más refringente para azul, menos para rojo).
+  - Pausa, reanudar, reiniciar.
+  - No dibuja nada. Expone el campo a quien lo pida.
+
+MÓDULO 2 — COLOR (PERCEPCIÓN HUMANA)
+
+  - Lee el campo del motor EM.
+  - Aplica la conversión longitud de onda → RGB (algoritmo de Dan Bruton).
+  - Pinta el campo con el color que vería un ojo humano con tres conos.
+  - En modo luz blanca, superpone las tres simulaciones (R+G+B) para
+    mostrar dispersión.
+  - Botón de descarga PNG.
+
+MÓDULO 3 — PERCEPCIÓN VISUAL
+
+  - Genera una escena de prueba con paisaje, casa, árbol, cara y texto.
+  - Añade parches de color saturado y círculos tipo Ishihara para hacer
+    visibles las diferencias del daltonismo.
+  - Simula diez condiciones visuales con severidad ajustable 0-100%.
+  - Permite activar una "compensación" aproximada para ver intentos de mejora.
+  - Comparación lado a lado: normal vs simulado.
+  - Modo parpadeo A/B (800 ms) para notar diferencias sutiles.
+  - Descarga PNG de cada canvas.
+
+Condiciones implementadas:
+
+  - Degeneración macular seca       (borrón + mancha central)
+  - Degeneración macular húmeda     (distorsión + mancha central)
+  - Glaucoma                        (pérdida periférica, visión en túnel)
+  - Cataratas                       (borrón + tinte amarillento)
+  - Retinosis pigmentaria           (pérdida progresiva de periferia)
+  - Daltonismo                      (protanopia, deuteranopia, tritanopia)
+  - Hemianopsia                     (pérdida de mitad del campo, izq/der)
+  - Retinopatía diabética           (manchas dispersas por la retina)
+  - Astigmatismo                    (borrón direccional, horiz/vert)
+
+AVISO: la herramienta es EDUCATIVA. No diagnostica. No es producto
+sanitario. Sirve para entender, no para sustituir a un profesional.
+
+
+3. CÓMO LO HACE — VISIÓN GENERAL
+--------------------------------------------------------------------------------
+
+Flujo de datos:
+
+  [Registro de módulos]
+        │
+        ▼
+  [Orquestador]  ── gestiona activación, dependencias, mount/unmount/frame
+        │
+        ├─► [Módulo em-motor]  ── produce campo EM
+        │         │
+        │         ▼
+        │   [Módulo em-color]  ── lee campo, aplica λ→RGB, pinta
+        │
+        └─► [Módulo percepcion] ── genera escena, aplica filtros, compara
+
+Cada módulo declara:
+  - id, nombre
+  - depende: [ids de otros módulos]
+  - activoPorDefecto: true/false
+  - mount(ctx): construye su DOM al activarse
+  - unmount(ctx): limpia al desactivarse
+  - frame(ctx): opcional, se llama cada frame si está activo
+  - api: opcional, funciones públicas para otros módulos
+
+El orquestador:
+  1. Monta la barra de checkboxes con todos los módulos.
+  2. Activa los marcados por defecto (respetando dependencias).
+  3. Cada vez que un módulo se activa, llama a su mount().
+  4. Cada vez que se desactiva, llama a su unmount() (si existe).
+  5. En un bucle de requestAnimationFrame, llama a frame() de los activos.
+  6. Si intentas desactivar un módulo del que otro depende, lo impide.
+
+No hay acoplamiento entre módulos. El de color no sabe que el de percepción
+existe. El de percepción no sabe que hay un motor EM. Solo el orquestador
+los conoce a todos.
+
+
+4. FÍSICA
+--------------------------------------------------------------------------------
+
+4.1. Ecuaciones de Maxwell en modo TM
+
+En 2D, con simetría en z, se reduce a tres componentes: Ez, Hx, Hy.
+Las ecuaciones son:
+
+  ∂Hx/∂t = -(1/μ) ∂Ez/∂z
+  ∂Hy/∂t =  (1/μ) ∂Ez/∂x
+  ∂Ez/∂t =  (1/ε) [∂Hy/∂x - ∂Hx/∂z]
+
+Es el mismo sistema de Maxwell que resolvería un simulador 3D, pero
+proyectado sobre un plano. Suficiente para ver propagación, reflexión,
+refracción y dispersión.
+
+4.2. Discretización: esquema de Yee
+
+Grid escalonado. Las componentes no viven en el mismo punto:
+
+  Ez en (i, j)
+  Hx en (i, j + 1/2)
+  Hy en (i + 1/2, j)
+
+Las derivadas se calculan con diferencias centradas de segundo orden.
+Avance temporal tipo leapfrog: primero H, luego E, cada uno con el otro
+recién calculado.
+
+Condición de estabilidad (CFL) en 2D:
+
+  dt ≤ S · min(dx, dz) / (c · √2),  S < 1
+
+En el código S = 0.3535 para máxima estabilidad sin oscilaciones.
+
+4.3. Fronteras
+
+Sponge absorbente en los cuatro bordes. Amortiguamiento con perfil
+cúbico, máximo 0.12 por paso en el borde exterior. Absorbe la mayor
+parte de la onda incidente. No es CPML, pero es barato y suficiente
+para visualización.
+
+4.4. Dispersión: por qué el prisma separa colores
+
+En el vacío, todas las longitudes de onda viajan a c. En un medio
+material, la velocidad depende de la frecuencia. El azul (450 nm) "ve"
+un índice de refracción mayor que el rojo (650 nm).
+
+En el simulador esto se modela con una tabla:
+
+  λ = 650 nm → ε = 3.6  (rojo)
+  λ = 550 nm → ε = 4.0  (verde)
+  λ = 450 nm → ε = 4.5  (azul)
+
+En modo luz blanca se lanzan tres simulaciones en paralelo, una por λ,
+cada una con su ε escalado. La superposición de las tres da un arcoíris
+al atravesar el prisma. Esto es aproximadamente lo que pasa en la
+realidad, pero sin modelar la estructura molecular del material. Es una
+dispersión "efectiva", no una derivada de primeros principios.
+
+
+5. PERCEPCIÓN DEL COLOR
+--------------------------------------------------------------------------------
+
+Aquí está la parte conceptualmente más interesante.
+
+La onda electromagnética tiene:
+  - Frecuencia (o equivalentemente, longitud de onda)
+  - Amplitud
+  - Fase
+  - Polarización
+
+Lo que NO tiene:
+  - Color
+
+El rojo no está en la onda. La onda tiene 650 nm. El rojo es la
+interpretación que hace un sistema nervioso cuando un fotón de 650 nm
+incide sobre un cono L (longitud de onda larga) de la retina.
+
+El ojo humano tiene tres tipos de conos:
+  - S (short, ~420 nm de pico) — azul
+  - M (medium, ~530 nm) — verde
+  - L (long, ~560 nm) — rojo
+
+Un color cualquiera excita los tres con proporciones distintas. El
+cerebro compara las tres señales y construye el color. No hay "rojo" en
+la luz. Hay una proporción de excitaciones que el cerebro interpreta
+como rojo.
+
+El módulo em-color aplica una función de conversión λ → RGB que
+aproxima esta respuesta. Es la función de Dan Bruton (1996), una
+aproximación empírica ampliamente usada en gráficos. No es fisiología
+real pero se le parece.
+
+Consecuencias:
+
+  - Si tuvieras un solo tipo de cono, verías todo en gris.
+  - Si tuvieras cuatro, verías colores que no existen para nosotros.
+    (Algunas personas los tienen; es el "tetracromatismo".)
+  - La mantis religiosa tiene doce tipos de fotorreceptores. Ve un
+    arcoíris que no podemos imaginar.
+  - Los daltónicos no "ven mal": ven distinto. Un protanope confunde
+    rojo y verde porque su cono L es disfuncional.
+
+El módulo de percepción explota esto: simula qué proporciones de
+excitación tendría un ojo con cada tipo de daltonismo, y las traduce a
+RGB para que las veamos. No es exacto, pero es honesto.
+
+
+6. CONDICIONES VISUALES — QUÉ SIMULA CADA UNA
+--------------------------------------------------------------------------------
+
+6.1. Degeneración macular seca
+
+La mácula es la zona central de la retina. Ahí está la mayor densidad
+de conos, y por eso vemos con detalle en el centro del campo visual.
+En la DMAE seca, los fotorreceptores centrales mueren lentamente.
+Resultado: borrón en el centro, que se convierte en mancha oscura.
+
+La simulación aplica un blur central + una mancha radial oscura.
+
+6.2. Degeneración macular húmeda
+
+Variante agresiva. Se forman vasos anómalos bajo la retina que sangran.
+Además del borrón y la mancha, produce metamorfopsia: las líneas rectas
+se ven onduladas. Es lo primero que nota el paciente.
+
+La simulación aplica una distorsión radial sinusoidal sobre la zona
+central (remapeo de píxeles) + mancha + tinte.
+
+6.3. Glaucoma
+
+Daño al nervio óptico, normalmente por presión intraocular elevada.
+La pérdida empieza por la periferia y avanza hacia el centro. En fases
+avanzadas, el campo visual es un túnel.
+
+La simulación aplica un viñeteado radial: visión clara en el centro,
+oscuridad total hacia fuera.
+
+6.4. Cataratas
+
+El cristalino se vuelve opaco. La luz se dispersa y llega menos y peor.
+Efecto: borrón global, pérdida de contraste, tinte amarillento.
+
+La simulación aplica blur global + multiply con amarillo + menos
+contraste. La compensación intenta subir contraste y corregir el tinte.
+
+6.5. Retinosis pigmentaria
+
+Degeneración de los fotorreceptores. Empieza por la periferia y avanza
+hacia el centro. El campo visual se estrecha progresivamente.
+
+Similar al glaucoma visualmente, pero la causa es retiniana, no del
+nervio. La simulación aplica un viñeteado gradual.
+
+6.6. Daltonismo
+
+No es una enfermedad. Es una variación en los fotopigmentos.
+  - Protanopia: falta el pigmento L (rojo). Confunden rojo con verde.
+  - Deuteranopia: falta el pigmento M (verde). Igual.
+  - Tritanopia: falta el pigmento S (azul). Confunden azul con verde.
+
+La simulación aplica una matriz 3×3 que remapea los canales RGB según
+el tipo. Se mezcla con la identidad según severidad (0-100%). En 100%
+es el efecto completo; en 50% es intermedio (útil para "portadores"
+que tienen una forma leve).
+
+Para hacerlo visible se añaden a la escena:
+  - Una tira de parches de color saturado (rojo, verde, naranja,
+    violeta, cian, oliva). Un no-daltónico los ve todos distintos; un
+    daltónico ve algunos iguales.
+  - Tres círculos Ishihara simplificados. Fondo y número en colores que
+    un daltónico confunde. Si no ves el número, ves como un daltónico.
+
+6.7. Hemianopsia
+
+Pérdida de la mitad del campo visual. Puede ser por ictus, tumor o
+traumatismo. Si es izquierda, no ves nada en el lado izquierdo de
+ambos ojos.
+
+La simulación tapa una mitad vertical del canvas con negro.
+
+6.8. Retinopatía diabética
+
+La diabetes daña los vasos sanguíneos de la retina. Aparecen
+microaneurismas, hemorragias y exudados. Visualmente: manchas
+dispersas, flotadores, zonas borrosas.
+
+La simulación genera un conjunto de manchas rojizas con un generador
+pseudorandom determinista, para que no cambien cada frame.
+
+6.9. Astigmatismo
+
+La córnea no es esférica sino elíptica. La luz se enfoca en un eje pero
+no en el perpendicular. Resultado: borrón direccional. Las líneas en
+una dirección se ven nítidas; las perpendiculares, borrosas.
+
+La simulación aplica un blur direccional (horizontal o vertical)
+sumando copias desplazadas de la imagen.
+
+
+7. ARQUITECTURA
+--------------------------------------------------------------------------------
+
+Capas, con dependencias dirigidas hacia dentro:
+
+  ┌─────────────────────────────────────────────────────────┐
+  │  UI de cada módulo (construida en su mount())           │
+  └───────────────────────┬─────────────────────────────────┘
+                          │
+  ┌───────────────────────▼─────────────────────────────────┐
+  │  Orquestador + Bus de eventos                           │
+  └───────────────────────┬─────────────────────────────────┘
+                          │
+  ┌───────────────────────▼─────────────────────────────────┐
+  │  Registro de módulos                                    │
+  │  Cada módulo declara: id, nombre, depende, activo,      │
+  │  mount, unmount, frame, api                             │
+  └───────────────────────┬─────────────────────────────────┘
+                          │
+  ┌───────────────────────▼─────────────────────────────────┐
+  │  Módulos (cada uno autónomo)                            │
+  │  em-motor  ·  em-color  ·  percepcion                   │
+  └─────────────────────────────────────────────────────────┘
+
+El registro no conoce el DOM ni la física. Solo almacena definiciones.
+
+El orquestador conoce el registro y el DOM. Activa, desactiva, respeta
+dependencias. No sabe qué hace cada módulo, solo cuándo llamarlo.
+
+Cada módulo es una IIFE. No puede acceder a variables de otros módulos
+salvo a través de api. Eso garantiza aislamiento y permite copiar cada
+sección a un archivo .js independiente sin reescribir nada.
+
+Los módulos se comunican solo por api (síncrona) o por bus de eventos
+(asíncrona). En este proyecto se usa api: em-color lee el campo del
+motor EM con motor.getFields(). No hay acoplamiento oculto.
+
+
+8. TESTS
+--------------------------------------------------------------------------------
+
+Se ejecutan al cargar. Los resultados van a consola y a un panel visible.
+
+Cubren:
+
+  EventBus:
+    - on/emit recibe payload correctamente
+    - off desuscribe
+
+  wavelengthToRGB:
+    - 550 nm dominante verde
+    - 650 nm dominante rojo
+    - 450 nm dominante azul
+    - fuera de rango devuelve negro
+
+  ModuleRegistry:
+    - add/get/all funcionan
+    - get de id inexistente devuelve undefined
+
+  Estructura de módulos:
+    - percepción registrado y con mount función
+    - percepción no tiene dependencias
+    - em-color depende de em-motor
+    - em-motor expone api con getFields, setScenario, reset
+
+Lo que NO está testeado y por qué:
+
+  - Los filtros de percepción están dentro de la IIFE del módulo. No son
+    accesibles desde fuera. Se podría exponer api.testFilter() para
+    testearlos, pero el coste de hacerlo supera el beneficio para un
+    prototipo. Se ven funcionar al primer clic.
+  - El orquestador no se testea por separado: se prueba en la práctica
+    al activar y desactivar módulos.
+
+
+9. CÓMO SE USA
+--------------------------------------------------------------------------------
+
+1. Abrir el HTML en un navegador.
+2. Los tests se ejecutan al cargar. Mirar la consola y el panel inferior.
+3. Activar/desactivar módulos desde la barra superior.
+4. Motor EM: elegir escenario (vacío, lámina, prisma, lente), modo
+   (monocromático o luz blanca), λ si procede.
+5. Color: observar cómo el campo EM se pinta con el color que vería un
+   ojo humano.
+6. Percepción: elegir condición, ajustar severidad, activar
+   compensación, activar parpadeo A/B para notar diferencias sutiles.
+7. Descargar PNG de cualquier canvas si quieres compartirlo.
+
+Para notar bien el daltonismo:
+  - Elegir "Daltonismo" en condiciones.
+  - Subtipo: tritanopia (el más visible).
+  - Severidad: 90 (se ajusta sola al entrar).
+  - Activar parpadeo A/B.
+  - Mirar los parches de color y los círculos Ishihara.
+  - Un no-daltónico ve los números 5, 3, 7. Un daltónico puede no verlos
+    o verlos parcialmente.
+
+
+10. LÍMITES
+--------------------------------------------------------------------------------
+
+- Modo TM 2D. No hay polarización cruzada, no hay 3D.
+- Dispersión efectiva, no derivada de primeros principios. Los valores
+  de ε para cada λ son empíricos.
+- Sponge absorbente, no CPML. Hay alguna reflexión parásita en los
+  bordes, sobre todo en incidencia oblicua.
+- Los filtros de percepción son aproximaciones visuales. No son
+  simulaciones fisiológicas de la retina. La degeneración macular real
+  no es un blur gaussiano, es una pérdida irregular de fotorreceptores.
+- La compensación es simbólica. Sirve para mostrar la idea de "procesar
+  la imagen para mejorar lo que queda", no para prescribir nada.
+- El simulador no diagnostica. No dice "tienes esto". Solo dice "si
+  tuvieras esto, verías así".
+
+
+11. EXTENSIONES NATURALES
+--------------------------------------------------------------------------------
+
+En orden de dificultad:
+
+  1. Modo "ojo alien": cambiar las sensibilidades de los conos
+     (abejas, aves, mantis). Solo hay que cambiar la función λ→RGB y
+     añadir un cuarto canal. Trivial con la arquitectura actual.
+  2. Trazado de rayos del ojo (córnea, cristalino, retina). Otro módulo
+     aparte. Barato y muy visual. Ayuda a entender cataratas y miopía.
+  3. Retina a escala micrométrica con el motor EM. Caro
+     computacionalmente pero posible en parches pequeños.
+  4. Modo comparación A/B con slider (barrido entre normal y simulado).
+     Complementa al parpadeo.
+  5. Modo "auditar el simulador": pasar el propio texto de las
+     explicaciones por el analizador de texto. Sería incómodo y sería
+     correcto.
+  6. Exportar toda la configuración a URL para compartir un estado
+     concreto.
+
+
+12. FILOSOFÍA
+--------------------------------------------------------------------------------
+
+- Módulos independientes. Cada uno hace una cosa. Se combinan sin
+  acoplarse.
+- Un solo archivo. Portable. Se abre con doble clic. Sin servidor, sin
+  build, sin dependencias.
+- Si algo se puede separar, se separa. Las IIFE son fronteras reales.
+- La física se modela honestamente. Si algo es aproximación, se dice.
+- El color no está en la onda. La percepción no está en el objeto. La
+  herramienta lo enseña, no lo predica.
+- No diagnostica. No prescribe. Solo muestra.
+- Se itera pequeño. Primero funciona, luego se mejora.
+
+
+13. AVISO
+--------------------------------------------------------------------------------
+
+Este laboratorio es educativo. No es un producto sanitario. No
+diagnostica ni trata ninguna condición. Si sospechas que tú o alguien
+cercano tiene un problema visual, consulta a un oftalmólogo.
+
+Las simulaciones son aproximaciones. Ninguna condición real se ve
+exactamente como aquí. Cada persona ve distinto, incluso con el mismo
+diagnóstico.
+
+El módulo de percepción está pensado para que quien ve bien entienda
+qué puede ver alguien que ve distinto. No para que quien ve distinto
+se vea a sí mismo. Ese ejercicio puede ser duro.
+
+
+FIN DEL DOCUMENTO
+═══════════════════════════════════════════════════════════════════════════
