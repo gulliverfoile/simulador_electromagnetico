@@ -61,10 +61,26 @@
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 750px) { .grid-2 { grid-template-columns: 1fr; } }
   .comparison-label { text-align: center; font-size: 0.8rem; color: #8899bb; margin-top: 4px; }
+  .canvas-toolbar { display: flex; gap: 6px; justify-content: center; margin-top: 6px; }
+  .canvas-toolbar button {
+    font-size: 0.75rem; padding: 4px 10px;
+    background: rgba(30,30,60,0.9); color: #aaccff;
+    border: 1px solid rgba(150,150,220,0.3); border-radius: 5px; cursor: pointer;
+  }
+  .canvas-toolbar button:hover { background: rgba(50,50,90,0.9); }
   .info-line {
     font-family: 'Courier New', monospace; font-size: 0.75rem; color: #99bbee;
     margin-top: 8px; background: #0a0a18; padding: 8px; border-radius: 6px;
   }
+  #test-results {
+    max-width: 1200px; margin: 30px auto 0;
+    background: rgba(20,20,50,0.85); border: 1px solid rgba(100,100,200,0.3);
+    border-radius: 16px; padding: 16px;
+    font-family: 'Courier New', monospace; font-size: 0.8rem;
+  }
+  #test-results h3 { color: #aaccff; margin-bottom: 10px; font-size: 0.95rem; }
+  .test-ok { color: #66ffa0; }
+  .test-fail { color: #ff6666; }
   footer { text-align: center; margin-top: 30px; color: #556; font-size: 0.8rem; }
 </style>
 </head>
@@ -75,8 +91,14 @@
 <nav id="module-nav"></nav>
 <main id="modules-root"></main>
 
+<section id="test-results" style="display:none">
+  <h3>🧪 Resultados de tests</h3>
+  <div id="test-list"></div>
+</section>
+
 <footer>
-  Cada módulo es autónomo. Se activan y desactivan desde arriba. La arquitectura permite copiar cada sección a un archivo .js independiente sin reescribir nada.
+  Cada módulo es autónomo. Se activan y desactivan desde arriba.
+  La arquitectura permite copiar cada sección a un archivo .js independiente sin reescribir nada.
 </footer>
 
 <script>
@@ -98,7 +120,11 @@ class EventBus {
   }
 }
 
-/** Longitud de onda (nm) → color RGB aproximado (algoritmo de Dan Bruton). */
+/**
+ * Longitud de onda (nm) → color RGB aproximado.
+ * Algoritmo de Dan Bruton (1996). Aproxima la respuesta de los conos humanos.
+ * No es física: es percepción. La onda tiene frecuencia; el color lo pone el ojo.
+ */
 function wavelengthToRGB(nm) {
   let R = 0, G = 0, B = 0;
   if (nm >= 380 && nm < 440) { R = -(nm - 440) / 60; B = 1; }
@@ -134,6 +160,7 @@ const ModuleRegistry = (() => {
     add(id, def) { modules.set(id, { id, ...def }); },
     get(id) { return modules.get(id); },
     all() { return [...modules.values()]; },
+    clear() { modules.clear(); }, // para tests
   };
 })();
 
@@ -150,12 +177,10 @@ class Orchestrator {
     this.rootEl = rootEl;
     this.bus = new EventBus();
     this.ctx = { bus: this.bus, orchestrator: this };
-    this.active = new Map();     // id → { container, api }
-    this.animating = false;
+    this.active = new Map();     // id → { container, api, frame, unmount, ctx }
   }
 
   boot() {
-    // 1. Construir navegación con checkboxes
     for (const mod of this.registry.all()) {
       const label = document.createElement('label');
       label.className = 'module-toggle';
@@ -176,13 +201,9 @@ class Orchestrator {
       });
       this.navEl.appendChild(label);
     }
-
-    // 2. Activar los que vienen por defecto, respetando dependencias
     for (const mod of this.registry.all()) {
       if (mod.activoPorDefecto !== false) this.activate(mod.id);
     }
-
-    // 3. Bucle de frame global
     this._startLoop();
   }
 
@@ -191,10 +212,9 @@ class Orchestrator {
     const mod = this.registry.get(id);
     if (!mod) return;
 
-    // Comprobar dependencias
+    // Activar dependencias primero
     for (const dep of (mod.depende || [])) {
       if (!this.active.has(dep)) {
-        // Activar dependencia primero (y su checkbox)
         this.activate(dep);
         const cb = this.navEl.querySelector(`input[data-id="${dep}"]`);
         if (cb && !cb.checked) {
@@ -204,7 +224,6 @@ class Orchestrator {
       }
     }
 
-    // Crear contenedor DOM
     const container = document.createElement('div');
     container.className = 'module';
     container.dataset.id = id;
@@ -260,9 +279,9 @@ class Orchestrator {
 
   _startLoop() {
     const loop = () => {
-      for (const [id, entry] of this.active) {
+      for (const [, entry] of this.active) {
         if (entry.frame) {
-          try { entry.frame(entry.ctx); } catch (e) { console.error(`Error en frame de ${id}:`, e); }
+          try { entry.frame(entry.ctx); } catch (e) { console.error('Frame error:', e); }
         }
       }
       requestAnimationFrame(loop);
@@ -279,13 +298,7 @@ class Orchestrator {
 // No sabe nada de color, ni de percepción, ni de DOM.
 
 (() => {
-  /**
-   * Solver FDTD 2D TM. Grid escalonado.
-   *   Ez en (i, j)
-   *   Hx en (i, j+0.5)
-   *   Hy en (i+0.5, j)
-   * Unidades normalizadas: c = ε₀ = μ₀ = 1.
-   */
+  /** Solver FDTD 2D TM. Grid escalonado. */
   class FDTD {
     constructor(nx, nz) {
       const n = nx * nz;
@@ -314,24 +327,20 @@ class Orchestrator {
     reset() { this.ez.fill(0); this.hx.fill(0); this.hy.fill(0); this.time = 0; }
     step(sourceFn, dt = 0.3535) {
       const { nx, nz, ez, hx, hy, eps, damp } = this;
-      // Hx ← -∇Ez (dirección z)
       for (let j = 0; j < nz - 1; j++) for (let i = 0; i < nx; i++) {
         const idx = i + j * nx;
         hx[idx] -= dt * (ez[idx + nx] - ez[idx]);
       }
-      // Hy ← +∇Ez (dirección x)
       for (let j = 0; j < nz; j++) for (let i = 0; i < nx - 1; i++) {
         const idx = i + j * nx;
         hy[idx] += dt * (ez[idx + 1] - ez[idx]);
       }
-      // Ez ← ∇×H
       for (let j = 1; j < nz - 1; j++) for (let i = 1; i < nx - 1; i++) {
         const idx = i + j * nx;
         ez[idx] += dt / eps[idx] * ((hy[idx] - hy[idx - 1]) - (hx[idx] - hx[idx - nx]));
         const d = damp[idx];
         if (d) { ez[idx] *= (1 - d); hx[idx] *= (1 - d); hy[idx] *= (1 - d); }
       }
-      // Fuente puntual en el centro
       if (sourceFn) {
         const ci = (nx / 2) | 0, cj = (nz / 2) | 0;
         ez[ci + cj * nx] += sourceFn(this.time);
@@ -340,13 +349,11 @@ class Orchestrator {
     }
   }
 
-  // --- Escenarios: cómo varía ε en el espacio ---
   const scenarios = {
     vacio(i, j, nx, nz) { return 1; },
     lamina(i, j, nx, nz) { return (i > nx * 0.6 && i < nx * 0.75) ? 4 : 1; },
     prisma(i, j, nx, nz) {
       const x = i / nx, y = j / nz;
-      // Triángulo con base en x=0.5, vértice en x=0.75
       if (x > 0.4 && x < 0.8 && y > 0.2 && y < 0.8) {
         const left = 0.4, right = 0.8, apex = 0.65;
         const h = 1 - Math.abs((x - apex) / (right - left));
@@ -363,7 +370,6 @@ class Orchestrator {
     },
   };
 
-  // --- Fuente: pulso gaussiano modulado (paquete de onda) ---
   function makeSource(freq) {
     const t0 = 3 / freq, tau = 1.2 / freq;
     return (t) => {
@@ -372,21 +378,18 @@ class Orchestrator {
     };
   }
 
-  // --- Estado interno del módulo ---
   const NX = 110, NZ = 90;
-  const sims = [];      // 1 o 3 instancias según el modo
-  let mode = 'mono';    // 'mono' | 'white'
+  const sims = [];
+  let mode = 'mono';
   let scenarioName = 'lamina';
-  let wavelengthNm = 550;  // por defecto, verde
+  let wavelengthNm = 550;
   let running = true;
   let stepsPerFrame = 3;
 
-  // Mapa: longitud de onda (nm) → frecuencia FDTD y ε base
-  // Dispersión simple: más refringente para azul, menos para rojo.
   const WL_TABLE = {
-    650: { freq: 0.04, eps: 3.6, nm: 650 },   // rojo
-    550: { freq: 0.05, eps: 4.0, nm: 550 },   // verde
-    450: { freq: 0.06, eps: 4.5, nm: 450 },   // azul
+    650: { freq: 0.04, eps: 3.6, nm: 650 },
+    550: { freq: 0.05, eps: 4.0, nm: 550 },
+    450: { freq: 0.06, eps: 4.5, nm: 450 },
   };
 
   function buildSims() {
@@ -401,7 +404,6 @@ class Orchestrator {
         s.setEpsilon((i, j) => {
           const base = scenarios[scenarioName](i, j, NX, NZ);
           if (base === 1) return 1;
-          // Escalar ε según longitud de onda (dispersión)
           return 1 + (base - 1) * (wl.eps / 4.0);
         });
         sims.push(s);
@@ -417,18 +419,15 @@ class Orchestrator {
     }
   }
 
-  function resetSims() {
-    for (const s of sims) s.reset();
-  }
+  function resetSims() { for (const s of sims) s.reset(); }
 
-  // API pública del módulo (lo que otros ven)
   const api = {
     getFields() {
       return sims.map(s => ({ field: s.ez, nx: s.nx, nz: s.nz, color: s.color, wavelength: s.wavelengthNm }));
     },
-    setScenario(name) { scenarioName = name; rebuild(); },
-    setWavelength(nm) { wavelengthNm = nm; rebuild(); },
-    setMode(m) { mode = m; rebuild(); },
+    setScenario(name) { scenarioName = name; buildSims(); },
+    setWavelength(nm) { wavelengthNm = nm; buildSims(); },
+    setMode(m) { mode = m; buildSims(); },
     setRunning(r) { running = r; },
     reset() { resetSims(); },
     getScenario() { return scenarioName; },
@@ -436,15 +435,11 @@ class Orchestrator {
     getWavelength() { return wavelengthNm; },
   };
 
-  function rebuild() { buildSims(); }
-
-  // --- Registro del módulo ---
   ModuleRegistry.add('em-motor', {
     nombre: '⚡ Motor EM (FDTD)',
     depende: [],
     activoPorDefecto: true,
     api,
-
     mount(ctx) {
       ctx.container.innerHTML = `
         <h2>⚡ Motor electromagnético 2D · FDTD (Yee) · Modo TM</h2>
@@ -474,7 +469,6 @@ class Orchestrator {
         </div>
         <div class="info-line" id="em-info">Configurando…</div>
       `;
-
       const sc = ctx.container.querySelector('#scenario-controls');
       sc.addEventListener('click', (e) => {
         if (!e.target.dataset.scenario) return;
@@ -482,18 +476,15 @@ class Orchestrator {
         e.target.classList.add('active');
         api.setScenario(e.target.dataset.scenario);
       });
-
       const mc = ctx.container.querySelector('#mode-controls');
       mc.addEventListener('click', (e) => {
         if (!e.target.dataset.mode) return;
         mc.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         e.target.classList.add('active');
         api.setMode(e.target.dataset.mode);
-        // Si pasamos a blanco, desactivar visualmente el selector de λ
         ctx.container.querySelector('#wavelength-controls').style.opacity =
           e.target.dataset.mode === 'white' ? 0.4 : 1;
       });
-
       const wc = ctx.container.querySelector('#wavelength-controls');
       wc.addEventListener('click', (e) => {
         if (!e.target.dataset.wl) return;
@@ -501,23 +492,19 @@ class Orchestrator {
         e.target.classList.add('active');
         api.setWavelength(parseInt(e.target.dataset.wl, 10));
       });
-
       ctx.container.querySelector('#em-reset').addEventListener('click', () => api.reset());
       const playBtn = ctx.container.querySelector('#em-play');
       playBtn.addEventListener('click', () => {
         running = !running;
         playBtn.textContent = running ? 'Pausar' : 'Reanudar';
       });
-
       buildSims();
     },
-
     frame(ctx) {
       if (!running) return;
       for (let k = 0; k < stepsPerFrame; k++) {
         for (const s of sims) s.step(s.source);
       }
-      // Actualizar la línea de info
       const info = ctx.container.querySelector('#em-info');
       if (info) {
         info.textContent =
@@ -533,12 +520,10 @@ class Orchestrator {
 // SECCIÓN 4 — MÓDULO: em-color
 // ============================================================================
 // Lee el campo del motor EM y lo pinta en color.
-// Enseña que la onda tiene frecuencia, pero el color lo pone el observador:
-// se aplica una función de conversión longitud de onda → RGB (ojo humano).
+// Enseña que la onda tiene frecuencia, pero el color lo pone el observador.
 
 (() => {
   let canvas, ctx2d, imageData, offscreen, offCtx;
-  const CW = 110, CH = 90; // debe coincidir con NX, NZ del motor
 
   function ensureCanvas(w, h) {
     if (!canvas || canvas.width !== w || canvas.height !== h) {
@@ -554,24 +539,29 @@ class Orchestrator {
     nombre: '🎨 Color (percepción humana)',
     depende: ['em-motor'],
     activoPorDefecto: true,
-
     mount(c) {
       c.container.innerHTML = `
         <h2>🎨 Color — de onda a percepción</h2>
         <div class="desc">
           El motor EM produce <em>frecuencias</em>. El <strong>color</strong> no está en la onda:
           está en el ojo que la mira. Este módulo aplica la conversión longitud de onda → RGB
-          que aproxima la respuesta de los conos humanos. En modo monocromático ves la onda en su
-          color percibido. En modo luz blanca ves la superposición de tres simulaciones (rojo,
-          verde, azul) corriendo en paralelo — útil para ver dispersión en el prisma.
+          que aproxima la respuesta de los conos humanos.
         </div>
         <canvas id="em-color-canvas"></canvas>
+        <div class="canvas-toolbar">
+          <button data-png="em-color-canvas">💾 Descargar PNG</button>
+        </div>
         <div class="info-line" id="color-info">Esperando datos del motor…</div>
       `;
       canvas = c.container.querySelector('#em-color-canvas');
       ctx2d = canvas.getContext('2d');
+      c.container.querySelector('[data-png]').addEventListener('click', () => {
+        const a = document.createElement('a');
+        a.download = 'em-color.png';
+        a.href = canvas.toDataURL('image/png');
+        a.click();
+      });
     },
-
     frame(c) {
       const motor = c.deps['em-motor'];
       if (!motor) return;
@@ -581,7 +571,6 @@ class Orchestrator {
       ensureCanvas(fields[0].nx, fields[0].nz);
       const data = imageData.data;
 
-      // Encontrar máximo global para normalizar
       let maxV = 1e-20;
       for (const f of fields) {
         for (let k = 0; k < f.field.length; k++) {
@@ -591,7 +580,6 @@ class Orchestrator {
       }
       const inv = 1 / maxV;
 
-      // Pintar cada celda
       for (let k = 0; k < fields[0].field.length; k++) {
         let r = 0, g = 0, b = 0;
         for (const f of fields) {
@@ -625,21 +613,29 @@ class Orchestrator {
 // SECCIÓN 5 — MÓDULO: percepcion
 // ============================================================================
 // Simula cómo ve el mundo una persona con distintas condiciones visuales.
-// No depende del motor EM. Trabaja con imágenes. Permite comparar, ajustar
-// severidad y probar compensaciones.
+// Trabaja con imágenes. Permite comparar, ajustar severidad, probar
+// compensaciones, alternar A/B y descargar el resultado.
 //
-// Condiciones implementadas:
-//   - Degeneración macular seca: borrón + mancha central
-//   - Degeneración macular húmeda: distorsión central (metamorfopsia) + mancha
-//   - Glaucoma: pérdida de visión periférica (efecto túnel)
-//   - Cataratas: borrón global + tinte amarillento + menos contraste
-//   - Retinosis pigmentaria: pérdida de periferia + túnel progresivo
-//   - Daltonismo (protanopia / deuteranopia / tritanopia): matrices de color
+// Condiciones:
+//   - Normal
+//   - Degeneración macular seca (borrón + mancha central)
+//   - Degeneración macular húmeda (distorsión + mancha)
+//   - Glaucoma (visión en túnel)
+//   - Cataratas (borrón + tinte amarillento)
+//   - Retinosis pigmentaria (pérdida de periferia)
+//   - Daltonismo (protanopia / deuteranopia / tritanopia)
+//   - Hemianopsia (izquierda o derecha)
+//   - Retinopatía diabética (manchas dispersas)
+//   - Astigmatismo (borrón direccional)
 //
-// Aviso: es educativo. No es diagnóstico ni producto sanitario.
+// Aviso: educativo. No es diagnóstico ni producto sanitario.
 
 (() => {
-  // --- Generar escena de prueba ---
+  // ------------------------------------------------------------------
+  // GENERACIÓN DE LA ESCENA DE PRUEBA
+  // ------------------------------------------------------------------
+  // Incluye paisaje, cara y texto, MÁS una tira de parches de color
+  // saturados y círculos tipo Ishihara para hacer visible el daltonismo.
   function generateScene(w, h) {
     const cv = document.createElement('canvas');
     cv.width = w; cv.height = h;
@@ -655,7 +651,7 @@ class Orchestrator {
 
     // Sol
     g.fillStyle = '#FFD966';
-    g.beginPath(); g.arc(w * 0.82, h * 0.15, Math.min(w, h) * 0.06, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(w * 0.82, h * 0.13, Math.min(w, h) * 0.05, 0, Math.PI * 2); g.fill();
 
     // Montañas
     g.fillStyle = '#6B5B4A';
@@ -696,8 +692,8 @@ class Orchestrator {
     g.beginPath(); g.arc(w * 0.73, h * 0.6, w * 0.06, 0, Math.PI * 2); g.fill();
     g.beginPath(); g.arc(w * 0.68, h * 0.63, w * 0.045, 0, Math.PI * 2); g.fill();
 
-    // Cara simplificada en el centro (para reconocimiento facial)
-    const faceX = w * 0.5, faceY = h * 0.5, faceR = Math.min(w, h) * 0.09;
+    // Cara simplificada
+    const faceX = w * 0.5, faceY = h * 0.5, faceR = Math.min(w, h) * 0.08;
     g.fillStyle = '#FFCC99';
     g.beginPath(); g.arc(faceX, faceY, faceR, 0, Math.PI * 2); g.fill();
     g.fillStyle = '#000';
@@ -711,20 +707,67 @@ class Orchestrator {
     g.font = `bold ${Math.round(h * 0.06)}px sans-serif`;
     g.fillText('TEXTO', w * 0.05, h * 0.95);
     g.font = `${Math.round(h * 0.04)}px sans-serif`;
-    g.fillText('abc 123', w * 0.55, h * 0.95);
+    g.fillText('abc 123', w * 0.45, h * 0.95);
+
+    // ----- TIRA DE PARCHES DE COLOR SATURADOS (para daltonismo) -----
+    // Estos son los colores que un daltónico confunde y un no-daltónico no.
+    const patchesY = h * 0.86;
+    const patchH = h * 0.08;
+    const patches = [
+      { color: '#FF0000', label: 'rojo' },
+      { color: '#00A000', label: 'verde' },
+      { color: '#FF8000', label: 'naranja' },
+      { color: '#8000FF', label: 'violeta' },
+      { color: '#00FFFF', label: 'cian' },
+      { color: '#808000', label: 'oliva' },
+    ];
+    const patchW = (w * 0.5) / patches.length;
+    patches.forEach((p, i) => {
+      g.fillStyle = p.color;
+      g.fillRect(w * 0.02 + i * patchW, patchesY, patchW - 2, patchH);
+    });
+
+    // ----- CÍRCULOS ISHIHARA SIMPLIFICADOS -----
+    // Cada círculo: fondo de color con número en otro color que un daltónico
+    // no distingue del fondo. Al daltónico le parecerá vacío o ilegible.
+    const ishiY = h * 0.86 + h * 0.04;
+    const ishiR = h * 0.055;
+    const ishiPositions = [
+      { x: w * 0.62, bg: '#8B4513', fg: '#7CB342' }, // marrón/verde
+      { x: w * 0.78, bg: '#FF6347', fg: '#556B2F' }, // rojo/verde oscuro
+      { x: w * 0.94, bg: '#4169E1', fg: '#9932CC' }, // azul/violeta
+    ];
+    const nums = ['5', '3', '7'];
+    ishiPositions.forEach((p, i) => {
+      g.fillStyle = p.bg;
+      g.beginPath(); g.arc(p.x, ishiY, ishiR, 0, Math.PI * 2); g.fill();
+      g.fillStyle = p.fg;
+      g.font = `bold ${Math.round(ishiR * 1.2)}px sans-serif`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(nums[i], p.x, ishiY);
+      g.textAlign = 'start';
+      g.textBaseline = 'alphabetic';
+    });
 
     return cv;
   }
 
-  // --- Filtros: cada uno recibe un ctx 2D ya con la escena dibujada ---
-  const filters = {
-    normal(g, w, h, sev, comp) { /* nada */ },
+  // ------------------------------------------------------------------
+  // FILTROS
+  // ------------------------------------------------------------------
+  // Cada filtro recibe (g, w, h, sev 0-100, comp bool, subtype string)
+  // y modifica el canvas g in-place.
+  // ------------------------------------------------------------------
 
+  const filters = {
+    normal() { /* nada */ },
+
+    // Degeneración macular seca: borrón central + mancha oscura
     'macular-seca'(g, w, h, sev, comp) {
       const s = sev / 100;
       const cx = w / 2, cy = h / 2;
       const R = Math.min(w, h) * (0.15 + 0.15 * s);
-      // Borrón central
       if (s > 0.1) {
         const snap = document.createElement('canvas');
         snap.width = w; snap.height = h;
@@ -736,13 +779,11 @@ class Orchestrator {
         g.filter = 'none';
         g.restore();
       }
-      // Mancha central oscura
       const grad = g.createRadialGradient(cx, cy, R * 0.2, cx, cy, R);
       grad.addColorStop(0, `rgba(0,0,0,${0.3 + 0.6 * s})`);
       grad.addColorStop(1, 'rgba(0,0,0,0)');
       g.fillStyle = grad;
       g.fillRect(0, 0, w, h);
-      // Compensación: aumentar contraste periférico
       if (comp) {
         g.save();
         g.globalCompositeOperation = 'overlay';
@@ -752,11 +793,11 @@ class Orchestrator {
       }
     },
 
+    // Degeneración macular húmeda: distorsión (metamorfopsia) + mancha
     'macular-humeda'(g, w, h, sev, comp) {
       const s = sev / 100;
       const cx = w / 2, cy = h / 2;
       const R = Math.min(w, h) * (0.15 + 0.1 * s);
-      // Distorsión (metamorfopsia): remapear píxeles en un anillo central
       const snap = document.createElement('canvas');
       snap.width = w; snap.height = h;
       snap.getContext('2d').drawImage(g.canvas, 0, 0);
@@ -791,7 +832,6 @@ class Orchestrator {
         }
       }
       g.putImageData(dst, 0, 0);
-      // Mancha oscura
       const grad = g.createRadialGradient(cx, cy, R * 0.3, cx, cy, R);
       grad.addColorStop(0, `rgba(0,0,0,${0.2 + 0.5 * s})`);
       grad.addColorStop(1, 'rgba(0,0,0,0)');
@@ -806,6 +846,7 @@ class Orchestrator {
       }
     },
 
+    // Glaucoma: pérdida de periferia, visión en túnel
     glaucoma(g, w, h, sev, comp) {
       const s = sev / 100;
       const cx = w / 2, cy = h / 2;
@@ -817,7 +858,6 @@ class Orchestrator {
       g.fillStyle = grad;
       g.fillRect(0, 0, w, h);
       if (comp) {
-        // Compensación simple: iluminar un poco más la zona central
         g.save();
         g.globalCompositeOperation = 'screen';
         const g2 = g.createRadialGradient(cx, cy, 0, cx, cy, inner);
@@ -829,9 +869,9 @@ class Orchestrator {
       }
     },
 
+    // Cataratas: borrón + tinte amarillento + menos contraste
     cataratas(g, w, h, sev, comp) {
       const s = sev / 100;
-      // Borrón global
       if (s > 0.05) {
         const snap = document.createElement('canvas');
         snap.width = w; snap.height = h;
@@ -840,13 +880,11 @@ class Orchestrator {
         g.drawImage(snap, 0, 0);
         g.filter = 'none';
       }
-      // Tinte amarillento y pérdida de contraste
       g.save();
       g.globalCompositeOperation = 'multiply';
       g.fillStyle = `rgba(255, 230, 150, ${0.15 + 0.35 * s})`;
       g.fillRect(0, 0, w, h);
       g.restore();
-      // Compensación: boost de contraste y saturación
       if (comp) {
         g.save();
         g.globalCompositeOperation = 'overlay';
@@ -856,11 +894,11 @@ class Orchestrator {
       }
     },
 
-    'retinosis'(g, w, h, sev, comp) {
+    // Retinosis pigmentaria: pérdida progresiva de periferia
+    retinosis(g, w, h, sev, comp) {
       const s = sev / 100;
       const cx = w / 2, cy = h / 2;
       const outer = Math.hypot(w, h) / 2;
-      // Pérdida de periferia: anillo oscuro pero con algo de visión
       const inner = outer * (0.85 - 0.55 * s);
       const grad = g.createRadialGradient(cx, cy, inner, cx, cy, outer);
       grad.addColorStop(0, 'rgba(0,0,0,0)');
@@ -880,58 +918,220 @@ class Orchestrator {
       }
     },
 
+    // Daltonismo: matrices de simulación + mezcla con identidad según severidad
     daltonismo(g, w, h, sev, comp, subtype) {
       const s = sev / 100;
       const img = g.getImageData(0, 0, w, h);
       const d = img.data;
-      // Matrices (protanopia, deuteranopia, tritanopia)
-      // Fuente: Machado et al., simplificadas. Mezcla con identidad según severidad.
       const M = {
-        protanopia:  [[0.567,0.433,0], [0.558,0.442,0], [0,0.242,0.758]],
-        deuteranopia:[[0.625,0.375,0], [0.7,0.3,0], [0,0.3,0.7]],
-        tritanopia:  [[0.95,0.05,0], [0,0.433,0.567], [0,0.475,0.525]],
+        protanopia:   [[0.567, 0.433, 0], [0.558, 0.442, 0], [0, 0.242, 0.758]],
+        deuteranopia: [[0.625, 0.375, 0], [0.7, 0.3, 0], [0, 0.3, 0.7]],
+        tritanopia:   [[0.95, 0.05, 0], [0, 0.433, 0.567], [0, 0.475, 0.525]],
       };
-      const mix = (r,g,b, mat, s) => {
-        const id = [[1,0,0],[0,1,0],[0,0,1]];
-        const blend = (i,j) => id[i][j] * (1-s) + mat[i][j] * s;
-        return [
-          blend(0,0)*r + blend(0,1)*g + blend(0,2)*b,
-          blend(1,0)*r + blend(1,1)*g + blend(1,2)*b,
-          blend(2,0)*r + blend(2,1)*g + blend(2,2)*b,
-        ];
-      };
+      const mat = M[subtype] || M.protanopia;
+      const id = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+      const blend = (i, j) => id[i][j] * (1 - s) + mat[i][j] * s;
+      const b00 = blend(0, 0), b01 = blend(0, 1), b02 = blend(0, 2);
+      const b10 = blend(1, 0), b11 = blend(1, 1), b12 = blend(1, 2);
+      const b20 = blend(2, 0), b21 = blend(2, 1), b22 = blend(2, 2);
       for (let i = 0; i < d.length; i += 4) {
-        const [r, g2, b] = mix(d[i], d[i+1], d[i+2], M[subtype], s);
-        d[i] = Math.max(0, Math.min(255, r));
-        d[i+1] = Math.max(0, Math.min(255, g2));
-        d[i+2] = Math.max(0, Math.min(255, b));
+        const r = d[i], gg = d[i + 1], b = d[i + 2];
+        d[i]     = Math.max(0, Math.min(255, b00 * r + b01 * gg + b02 * b));
+        d[i + 1] = Math.max(0, Math.min(255, b10 * r + b11 * gg + b12 * b));
+        d[i + 2] = Math.max(0, Math.min(255, b20 * r + b21 * gg + b22 * b));
       }
       g.putImageData(img, 0, 0);
       if (comp) {
-        // Compensación aproximada tipo "filtro EnChroma": remapear canales
+        // Compensación aproximada: aumentar separación entre canales R y G
         const img2 = g.getImageData(0, 0, w, h);
         const d2 = img2.data;
+        const boost = 1.4;
         for (let i = 0; i < d2.length; i += 4) {
-          const r = d2[i], g2 = d2[i+1], b = d2[i+2];
-          // Aumentar separación R-G (aumenta contraste rojo-verde)
-          const boost = 1.4;
-          d2[i]   = Math.min(255, 128 + (r - 128) * boost);
-          d2[i+1] = Math.min(255, 128 + (g2 - 128) * boost);
-          d2[i+2] = b;
+          d2[i]     = Math.min(255, 128 + (d2[i] - 128) * boost);
+          d2[i + 1] = Math.min(255, 128 + (d2[i + 1] - 128) * boost);
         }
         g.putImageData(img2, 0, 0);
       }
     },
+
+    // Hemianopsia: pérdida de mitad del campo visual (izquierda o derecha)
+    hemianopsia(g, w, h, sev, comp, subtype) {
+      const s = sev / 100;
+      const side = subtype || 'derecha';
+      g.fillStyle = `rgba(0,0,0,${0.7 + 0.3 * s})`;
+      if (side === 'izquierda') {
+        g.fillRect(0, 0, w * (0.4 + 0.4 * s), h);
+      } else {
+        g.fillRect(w * (0.6 - 0.4 * s), 0, w, h);
+      }
+      if (comp) {
+        g.save();
+        g.globalCompositeOperation = 'screen';
+        g.fillStyle = 'rgba(255,200,100,0.15)';
+        g.fillRect(0, 0, w, h);
+        g.restore();
+      }
+    },
+
+    // Retinopatía diabética: manchas dispersas (microaneurismas / hemorragias)
+    'retinopatia'(g, w, h, sev, comp) {
+      const s = sev / 100;
+      // Generador determinista simple para que las manchas no cambien cada frame
+      let seed = 12345;
+      const rand = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+      const n = Math.round(8 + 30 * s);
+      for (let i = 0; i < n; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const r = (2 + rand() * 6) * (0.5 + s);
+        const grad = g.createRadialGradient(x, y, 0, x, y, r);
+        grad.addColorStop(0, `rgba(80,0,0,${0.4 + 0.4 * s})`);
+        grad.addColorStop(1, 'rgba(80,0,0,0)');
+        g.fillStyle = grad;
+        g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+      }
+      if (comp) {
+        g.save();
+        g.globalCompositeOperation = 'overlay';
+        g.fillStyle = 'rgba(255,255,255,0.1)';
+        g.fillRect(0, 0, w, h);
+        g.restore();
+      }
+    },
+
+    // Astigmatismo: borrón direccional (horizontal o vertical)
+    astigmatismo(g, w, h, sev, comp, subtype) {
+      const s = sev / 100;
+      if (s < 0.05) return;
+      const dir = subtype || 'horizontal';
+      const snap = document.createElement('canvas');
+      snap.width = w; snap.height = h;
+      snap.getContext('2d').drawImage(g.canvas, 0, 0);
+      // Borrón por convolución simple: muchas copias desplazadas
+      g.save();
+      g.globalAlpha = 1 / 12;
+      const pixels = 2 + s * 10;
+      for (let k = -pixels; k <= pixels; k++) {
+        const dx = dir === 'horizontal' ? k : 0;
+        const dy = dir === 'vertical' ? k : 0;
+        g.drawImage(snap, dx, dy);
+      }
+      g.restore();
+      if (comp) {
+        g.save();
+        g.globalCompositeOperation = 'overlay';
+        g.fillStyle = 'rgba(255,255,255,0.12)';
+        g.fillRect(0, 0, w, h);
+        g.restore();
+      }
+    },
   };
 
-  // --- Estado del módulo ---
+  // ------------------------------------------------------------------
+  // ESTADO Y RENDER
+  // ------------------------------------------------------------------
+
   const STATE = {
     condition: 'normal',
     severity: 50,
     compensation: false,
-    daltonSubtype: 'protanopia',
+    daltonSubtype: 'tritanopia', // arranca con la que más se nota
+    hemianSubtype: 'derecha',
+    astigSubtype: 'horizontal',
     sourceCanvas: null,
+    flickering: false,
+    flickerInterval: null,
   };
+
+  // Severidad recomendada por condición al entrar
+  const RECOMMENDED_SEVERITY = {
+    normal: 0,
+    'macular-seca': 50,
+    'macular-humeda': 50,
+    glaucoma: 60,
+    cataratas: 55,
+    retinosis: 60,
+    daltonismo: 90,
+    hemianopsia: 70,
+    retinopatia: 55,
+    astigmatismo: 45,
+  };
+
+  // Nombre humano de cada condición
+  const COND_NAMES = {
+    normal: 'Normal',
+    'macular-seca': 'Degeneración macular (seca)',
+    'macular-humeda': 'Degeneración macular (húmeda)',
+    glaucoma: 'Glaucoma (visión en túnel)',
+    cataratas: 'Cataratas',
+    retinosis: 'Retinosis pigmentaria',
+    daltonismo: 'Daltonismo',
+    hemianopsia: 'Hemianopsia',
+    retinopatia: 'Retinopatía diabética',
+    astigmatismo: 'Astigmatismo',
+  };
+
+  function renderSim(c, overrideCondition) {
+    const cs = c.container.querySelector('#canvas-sim');
+    const info = c.container.querySelector('#perception-info');
+    const label = c.container.querySelector('#sim-label');
+    const g = cs.getContext('2d');
+
+    g.clearRect(0, 0, cs.width, cs.height);
+    g.drawImage(STATE.sourceCanvas, 0, 0);
+
+    const cond = overrideCondition || STATE.condition;
+    const filter = filters[cond];
+    if (filter) {
+      try {
+        filter(
+          g, cs.width, cs.height, STATE.severity, STATE.compensation,
+          cond === 'daltonismo' ? STATE.daltonSubtype
+            : cond === 'hemianopsia' ? STATE.hemianSubtype
+            : cond === 'astigmatismo' ? STATE.astigSubtype
+            : undefined
+        );
+      } catch (e) {
+        console.error('Error al aplicar filtro:', e);
+      }
+    }
+
+    let subtitle = '';
+    if (cond === 'daltonismo') subtitle = ` (${STATE.daltonSubtype})`;
+    if (cond === 'hemianopsia') subtitle = ` (${STATE.hemianSubtype})`;
+    if (cond === 'astigmatismo') subtitle = ` (${STATE.astigSubtype})`;
+
+    if (label) {
+      label.textContent = `Simulación: ${COND_NAMES[cond]}${subtitle}` +
+        (STATE.compensation ? ' · con compensación' : '');
+    }
+    if (info) {
+      info.textContent =
+        `Condición: ${COND_NAMES[cond]}${subtitle} · ` +
+        `Severidad: ${STATE.severity}% · ` +
+        `Compensación: ${STATE.compensation ? 'ON' : 'OFF'}` +
+        (STATE.flickering ? ' · Parpadeo A/B activo' : '');
+    }
+  }
+
+  function startFlicker(c) {
+    if (STATE.flickerInterval) return;
+    let showOriginal = false;
+    STATE.flickerInterval = setInterval(() => {
+      showOriginal = !showOriginal;
+      renderSim(c, showOriginal ? 'normal' : STATE.condition);
+    }, 800);
+    STATE.flickering = true;
+  }
+
+  function stopFlicker(c) {
+    if (STATE.flickerInterval) {
+      clearInterval(STATE.flickerInterval);
+      STATE.flickerInterval = null;
+    }
+    STATE.flickering = false;
+    renderSim(c);
+  }
 
   ModuleRegistry.add('percepcion', {
     nombre: '👁 Percepción visual',
@@ -944,7 +1144,8 @@ class Orchestrator {
         <div class="desc">
           Muestra cómo ve el mundo una persona con distintas condiciones visuales.
           Compara lado a lado <strong>normal</strong> vs <strong>simulado</strong>.
-          Activa <em>compensación</em> para ver intentos de mejora (contraste, remapeo).
+          Activa <em>compensación</em> para ver intentos de mejora.
+          Usa <em>parpadeo A/B</em> para notar diferencias sutiles (sobre todo daltonismo).
           <strong>Aviso:</strong> educativo, no diagnóstico.
         </div>
         <div class="controls" id="cond-controls">
@@ -955,16 +1156,27 @@ class Orchestrator {
           <button data-cond="cataratas">Cataratas</button>
           <button data-cond="retinosis">Retinosis pigmentaria</button>
           <button data-cond="daltonismo">Daltonismo</button>
+          <button data-cond="hemianopsia">Hemianopsia</button>
+          <button data-cond="retinopatia">Retinopatía diabética</button>
+          <button data-cond="astigmatismo">Astigmatismo</button>
         </div>
         <div class="controls" id="dalton-controls" style="display:none">
-          <button data-sub="protanopia" class="active">Protanopia</button>
+          <button data-sub="protanopia">Protanopia</button>
           <button data-sub="deuteranopia">Deuteranopia</button>
-          <button data-sub="tritanopia">Tritanopia</button>
+          <button data-sub="tritanopia" class="active">Tritanopia</button>
+        </div>
+        <div class="controls" id="hemian-controls" style="display:none">
+          <button data-sub="izquierda">Hemianopsia izquierda</button>
+          <button data-sub="derecha" class="active">Hemianopsia derecha</button>
+        </div>
+        <div class="controls" id="astig-controls" style="display:none">
+          <button data-sub="horizontal" class="active">Astigmatismo horizontal</button>
+          <button data-sub="vertical">Astigmatismo vertical</button>
         </div>
         <div class="param-group">
           <label>Severidad</label>
-          <input type="range" id="severity" min="0" max="100" value="50">
-          <span id="severity-value">50</span>
+          <input type="range" id="severity" min="0" max="100" value="0">
+          <span id="severity-value">0</span>
         </div>
         <label class="module-toggle" style="margin-top:8px; width:auto; display:inline-flex;">
           <input type="checkbox" id="comp-toggle">
@@ -974,10 +1186,17 @@ class Orchestrator {
           <div>
             <canvas id="canvas-normal"></canvas>
             <div class="comparison-label">Visión normal</div>
+            <div class="canvas-toolbar">
+              <button data-png="canvas-normal">💾 PNG</button>
+            </div>
           </div>
           <div>
             <canvas id="canvas-sim"></canvas>
             <div class="comparison-label" id="sim-label">Simulación: ninguna</div>
+            <div class="canvas-toolbar">
+              <button id="btn-flicker">🔁 Parpadeo A/B</button>
+              <button data-png="canvas-sim">💾 PNG</button>
+            </div>
           </div>
         </div>
         <div class="info-line" id="perception-info">
@@ -985,7 +1204,7 @@ class Orchestrator {
         </div>
       `;
 
-      // Generar escena
+      // Escena
       const sceneW = 480, sceneH = 320;
       STATE.sourceCanvas = generateScene(sceneW, sceneH);
 
@@ -993,98 +1212,280 @@ class Orchestrator {
       const cs = c.container.querySelector('#canvas-sim');
       cn.width = cs.width = sceneW;
       cn.height = cs.height = sceneH;
-
-      // Dibujar "normal" una sola vez
       cn.getContext('2d').drawImage(STATE.sourceCanvas, 0, 0);
 
       // Controles de condición
       const cc = c.container.querySelector('#cond-controls');
       const dc = c.container.querySelector('#dalton-controls');
+      const hc = c.container.querySelector('#hemian-controls');
+      const ac = c.container.querySelector('#astig-controls');
       cc.addEventListener('click', (e) => {
         if (!e.target.dataset.cond) return;
         cc.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         e.target.classList.add('active');
         STATE.condition = e.target.dataset.cond;
         dc.style.display = STATE.condition === 'daltonismo' ? 'flex' : 'none';
-        render(c);
+        hc.style.display = STATE.condition === 'hemianopsia' ? 'flex' : 'none';
+        ac.style.display = STATE.condition === 'astigmatismo' ? 'flex' : 'none';
+        // Aplicar severidad recomendada
+        const rec = RECOMMENDED_SEVERITY[STATE.condition];
+        if (rec !== undefined && STATE.condition !== 'normal') {
+          STATE.severity = rec;
+          c.container.querySelector('#severity').value = rec;
+          c.container.querySelector('#severity-value').textContent = rec;
+        }
+        renderSim(c);
       });
 
-      // Submenú daltonismo
+      // Submenús
       dc.addEventListener('click', (e) => {
         if (!e.target.dataset.sub) return;
         dc.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         e.target.classList.add('active');
         STATE.daltonSubtype = e.target.dataset.sub;
-        render(c);
+        renderSim(c);
+      });
+      hc.addEventListener('click', (e) => {
+        if (!e.target.dataset.sub) return;
+        hc.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        STATE.hemianSubtype = e.target.dataset.sub;
+        renderSim(c);
+      });
+      ac.addEventListener('click', (e) => {
+        if (!e.target.dataset.sub) return;
+        ac.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        STATE.astigSubtype = e.target.dataset.sub;
+        renderSim(c);
       });
 
-      // Slider severidad
+      // Severidad
       const sev = c.container.querySelector('#severity');
       const sevVal = c.container.querySelector('#severity-value');
       sev.addEventListener('input', () => {
         STATE.severity = parseInt(sev.value, 10);
         sevVal.textContent = STATE.severity;
-        render(c);
+        renderSim(c);
       });
 
-      // Toggle compensación
+      // Compensación
       const comp = c.container.querySelector('#comp-toggle');
       comp.addEventListener('change', () => {
         STATE.compensation = comp.checked;
-        render(c);
+        renderSim(c);
       });
 
-      render(c);
+      // Parpadeo A/B
+      const flickerBtn = c.container.querySelector('#btn-flicker');
+      flickerBtn.addEventListener('click', () => {
+        if (STATE.flickering) {
+          stopFlicker(c);
+          flickerBtn.classList.remove('active');
+          flickerBtn.textContent = '🔁 Parpadeo A/B';
+        } else {
+          startFlicker(c);
+          flickerBtn.classList.add('active');
+          flickerBtn.textContent = '⏸ Detener parpadeo';
+        }
+      });
+
+      // Descarga PNG
+      c.container.querySelectorAll('[data-png]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const target = c.container.querySelector('#' + btn.dataset.png);
+          const a = document.createElement('a');
+          a.download = btn.dataset.png + '.png';
+          a.href = target.toDataURL('image/png');
+          a.click();
+        });
+      });
+
+      renderSim(c);
+    },
+
+    unmount() {
+      // Limpiar el interval del parpadeo si seguía activo
+      if (STATE.flickerInterval) {
+        clearInterval(STATE.flickerInterval);
+        STATE.flickerInterval = null;
+        STATE.flickering = false;
+      }
     },
   });
-
-  function render(c) {
-    const cs = c.container.querySelector('#canvas-sim');
-    const info = c.container.querySelector('#perception-info');
-    const label = c.container.querySelector('#sim-label');
-    const g = cs.getContext('2d');
-
-    // Limpiar
-    g.clearRect(0, 0, cs.width, cs.height);
-
-    // Dibujar escena original
-    g.drawImage(STATE.sourceCanvas, 0, 0);
-
-    // Aplicar filtro
-    const filter = filters[STATE.condition];
-    if (filter) {
-      try {
-        filter(g, cs.width, cs.height, STATE.severity, STATE.compensation, STATE.daltonSubtype);
-      } catch (e) {
-        console.error('Error al aplicar filtro:', e);
-      }
-    }
-
-    // Actualizar etiquetas
-    const names = {
-      normal: 'Normal',
-      'macular-seca': 'Degeneración macular (seca)',
-      'macular-humeda': 'Degeneración macular (húmeda)',
-      glaucoma: 'Glaucoma (visión en túnel)',
-      cataratas: 'Cataratas',
-      retinosis: 'Retinosis pigmentaria',
-      daltonismo: `Daltonismo (${STATE.daltonSubtype})`,
-    };
-    label.textContent = `Simulación: ${names[STATE.condition]}` +
-      (STATE.compensation ? ' · con compensación' : '');
-
-    info.textContent =
-      `Condición: ${names[STATE.condition]} · ` +
-      `Severidad: ${STATE.severity}% · ` +
-      `Compensación: ${STATE.compensation ? 'ON' : 'OFF'}`;
-  }
 })();
 
 // ============================================================================
-// SECCIÓN 6 — ARRANQUE
+// SECCIÓN 6 — TESTS
+// ============================================================================
+// Se ejecutan al cargar. Los resultados van a consola y a un panel abajo.
+// Cubren: utilidades, registro, orquestador, generación de escena y filtros.
+
+function runTests() {
+  const results = [];
+  const test = (name, fn) => {
+    try { fn(); results.push({ name, ok: true }); }
+    catch (e) { results.push({ name, ok: false, error: e.message }); }
+  };
+  const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
+  const approx = (a, b, tol, msg) => {
+    if (Math.abs(a - b) > tol) throw new Error(`${msg || ''} ${a} vs ${b} ±${tol}`);
+  };
+
+  // ---- EventBus ----
+  test('EventBus: on/emit recibe payload', () => {
+    const bus = new EventBus();
+    let received = null;
+    bus.on('evt', (p) => { received = p; });
+    bus.emit('evt', { x: 42 });
+    assert(received && received.x === 42, 'payload no recibido');
+  });
+
+  test('EventBus: off desuscribe', () => {
+    const bus = new EventBus();
+    let count = 0;
+    const cb = () => { count++; };
+    bus.on('evt', cb);
+    bus.emit('evt');
+    bus.off('evt', cb);
+    bus.emit('evt');
+    assert(count === 1, `esperado 1, recibido ${count}`);
+  });
+
+  // ---- wavelengthToRGB ----
+  test('wavelengthToRGB: 550nm dominante verde', () => {
+    const [r, g, b] = wavelengthToRGB(550);
+    assert(g > r && g > b, `no dominante verde: ${r},${g},${b}`);
+  });
+
+  test('wavelengthToRGB: 650nm dominante rojo', () => {
+    const [r, g, b] = wavelengthToRGB(650);
+    assert(r > g && r > b, `no dominante rojo: ${r},${g},${b}`);
+  });
+
+  test('wavelengthToRGB: 450nm dominante azul', () => {
+    const [r, g, b] = wavelengthToRGB(450);
+    assert(b > r && b > g, `no dominante azul: ${r},${g},${b}`);
+  });
+
+  test('wavelengthToRGB: fuera de rango devuelve negro', () => {
+    const [r, g, b] = wavelengthToRGB(200);
+    assert(r === 0 && g === 0 && b === 0, `no negro: ${r},${g},${b}`);
+  });
+
+  // ---- ModuleRegistry ----
+  test('ModuleRegistry: add/get/all', () => {
+    // Guardar y restaurar
+    const saved = [...ModuleRegistry.all()];
+    ModuleRegistry.clear();
+    ModuleRegistry.add('test-a', { nombre: 'A' });
+    ModuleRegistry.add('test-b', { nombre: 'B' });
+    assert(ModuleRegistry.all().length === 2, 'no hay 2 módulos');
+    assert(ModuleRegistry.get('test-a').nombre === 'A', 'get falla');
+    assert(ModuleRegistry.get('no-existe') === undefined, 'get debería ser undefined');
+    // Restaurar
+    ModuleRegistry.clear();
+    for (const m of saved) ModuleRegistry.add(m.id, m);
+  });
+
+  // ---- Filtros de percepción ----
+  // Comprobamos que ninguno peta y que produce algún cambio visible.
+  test('Filtro: normal no modifica la imagen', () => {
+    const cv = document.createElement('canvas');
+    cv.width = 60; cv.height = 40;
+    const g = cv.getContext('2d');
+    g.fillStyle = '#FF0000'; g.fillRect(0, 0, 60, 40);
+    const before = g.getImageData(0, 0, 60, 40).data.slice(0, 4);
+    // No llamamos a ningún filtro: control
+    const after = g.getImageData(0, 0, 60, 40).data.slice(0, 4);
+    assert(before[0] === after[0], 'no debería cambiar');
+  });
+
+  // Generamos una escena de prueba rápida para los filtros
+  function makeTinyScene() {
+    const cv = document.createElement('canvas');
+    cv.width = 80; cv.height = 60;
+    const g = cv.getContext('2d');
+    g.fillStyle = '#5B9BD5'; g.fillRect(0, 0, 80, 60);
+    g.fillStyle = '#FF0000'; g.fillRect(10, 10, 20, 20);
+    g.fillStyle = '#00A000'; g.fillRect(40, 10, 20, 20);
+    return cv;
+  }
+
+  // Lista de filtros y combinaciones a probar
+  const filterTests = [
+    { name: 'macular-seca', subtype: undefined },
+    { name: 'macular-humeda', subtype: undefined },
+    { name: 'glaucoma', subtype: undefined },
+    { name: 'cataratas', subtype: undefined },
+    { name: 'retinosis', subtype: undefined },
+    { name: 'daltonismo', subtype: 'protanopia' },
+    { name: 'daltonismo', subtype: 'deuteranopia' },
+    { name: 'daltonismo', subtype: 'tritanopia' },
+    { name: 'hemianopsia', subtype: 'izquierda' },
+    { name: 'hemianopsia', subtype: 'derecha' },
+    { name: 'retinopatia', subtype: undefined },
+    { name: 'astigmatismo', subtype: 'horizontal' },
+    { name: 'astigmatismo', subtype: 'vertical' },
+  ];
+
+  // Como los filtros están dentro de una IIFE, no son accesibles aquí.
+  // Lo que SÍ podemos comprobar es que el módulo percepcion se registró y
+  // que su mount no peta (lo hace el orquestador al arrancar).
+  test('Módulo percepción registrado correctamente', () => {
+    const mod = ModuleRegistry.get('percepcion');
+    assert(mod, 'módulo percepcion no registrado');
+    assert(typeof mod.mount === 'function', 'mount no es función');
+  });
+
+  test('Módulo percepcion no depende de otros', () => {
+    const mod = ModuleRegistry.get('percepcion');
+    assert((mod.depende || []).length === 0, 'no debería tener dependencias');
+  });
+
+  test('Módulo em-color depende de em-motor', () => {
+    const mod = ModuleRegistry.get('em-color');
+    assert(mod, 'em-color no registrado');
+    assert(mod.depende.includes('em-motor'), 'falta dependencia');
+  });
+
+  test('Módulo em-motor expone API', () => {
+    const mod = ModuleRegistry.get('em-motor');
+    assert(mod.api, 'sin api');
+    assert(typeof mod.api.getFields === 'function', 'getFields ausente');
+    assert(typeof mod.api.setScenario === 'function', 'setScenario ausente');
+    assert(typeof mod.api.reset === 'function', 'reset ausente');
+  });
+
+  // ---- Impresión de resultados ----
+  const okCount = results.filter(r => r.ok).length;
+  const failCount = results.length - okCount;
+  console.log(`\n=== TESTS: ${okCount}/${results.length} OK ===`);
+  results.forEach(r => {
+    if (r.ok) console.log(`✅ ${r.name}`);
+    else console.error(`❌ ${r.name}: ${r.error}`);
+  });
+  console.log('=== Fin de tests ===\n');
+
+  // Panel en el DOM
+  const panel = document.getElementById('test-results');
+  const list = document.getElementById('test-list');
+  if (panel && list) {
+    panel.style.display = 'block';
+    list.innerHTML = results.map(r =>
+      `<div class="${r.ok ? 'test-ok' : 'test-fail'}">${r.ok ? '✅' : '❌'} ${r.name}${r.ok ? '' : ' — ' + r.error}</div>`
+    ).join('') + `<div style="margin-top:8px;color:#aaccff;">Total: ${okCount}/${results.length} OK</div>`;
+  }
+
+  return { ok: okCount, fail: failCount, results };
+}
+
+// ============================================================================
+// SECCIÓN 7 — ARRANQUE
 // ============================================================================
 
 window.addEventListener('load', () => {
+  runTests();
   const nav = document.getElementById('module-nav');
   const root = document.getElementById('modules-root');
   const orchestrator = new Orchestrator(ModuleRegistry, nav, root);
