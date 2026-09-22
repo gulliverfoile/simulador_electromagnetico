@@ -488,6 +488,30 @@ El módulo de percepción está pensado para que quien ve bien entienda
 qué puede ver alguien que ve distinto. No para que quien ve distinto
 se vea a sí mismo. Ese ejercicio puede ser duro.
 
+-----------v2 animales------------
+Qué hace y cómo se usa.
+
+Cinco módulos en la barra superior. em-motor y em-color y percepcion vienen activos. ojo-animal está apagado por defecto; lo enciendes y verás que activa em-motor en modo espectro completo (5 longitudes) automáticamente.
+
+Prueba concreta para ver el asunto del ojo animal:
+
+Enciende ojo-animal.
+
+En el motor, escenario prisma.
+
+En ojo-animal, elige humano. El canvas derecho se parece al izquierdo: banda de colores normal.
+
+Cambia a abeja. Aparece una banda magenta donde antes no había nada. Eso es el UV del prisma, que un humano no ve, marcado en magenta.
+
+Cambia a búho. Todo gris. La física sigue igual, la percepción no tiene color.
+
+Cambia a serpiente de fosa. Verás la onda visible más un canal naranja superpuesto, que representa su visión térmica. Otra modalidad sensorial que no es color.
+
+Cambia a mantis. Aparece un turquesa raro. Es la marca de "hay 9 canales más que no puedo mostrarte".
+
+El momento que importa: al cambiar de animal, la onda sigue haciendo lo mismo en el motor, pero el canvas derecho cambia por completo. Es la misma física, otra representación.
+
+Diez animales implementados: humano, perro, gato, abeja, ave, búho, rata, pulpo, camaleón, mantis, serpiente de fosa. Ese último es distinto porque añade visión térmica, no color
 
 FIN DEL DOCUMENTO
 ═══════════════════════════════════════════════════════════════════════════
