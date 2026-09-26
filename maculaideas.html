@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Remapping — esqueleto modular</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0a0a1a; color: #e0e0ff; padding: 20px; }
+  .module { background: rgba(20,20,50,0.85); border: 1px solid rgba(100,100,200,0.3);
+            border-radius: 12px; padding: 16px; margin: 12px auto; max-width: 1100px; }
+  h2 { color: #aaccff; font-size: 1rem; margin-bottom: 8px; }
+  .desc { color: #8899bb; font-size: 0.85rem; margin-bottom: 10px; line-height: 1.4; }
+  canvas { background: #04040a; border-radius: 8px; display: block; max-width: 100%; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 750px) { .row { grid-template-columns: 1fr; } }
+  .info { font-family: monospace; font-size: 0.75rem; color: #99bbee;
+          background: #0a0a18; padding: 8px; border-radius: 6px; margin-top: 8px; }
+  button { padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(150,150,220,0.4);
+           background: rgba(30,30,60,0.9); color: #fff; cursor: pointer; font-size: 0.8rem; }
+  button:hover { background: rgba(50,50,90,0.9); }
+  button.active { border-color: #66ddff; background: linear-gradient(135deg, #3a3a7a, #2a2a5a); }
+  #test-results { max-width: 1100px; margin: 20px auto; font-family: monospace; font-size: 0.8rem; }
+  .ok { color: #66ffa0; } .fail { color: #ff6666; }
+</style>
+</head>
+<body>
+
+<h1 style="text-align:center;color:#aaccff;">Remapping modular — esqueleto</h1>
+<p style="text-align:center;color:#8899bb;font-size:0.85rem;">
+  Determinista · 2D por ojo · 3 sistemas de coordenadas · datos serializables
+</p>
+
+<main id="root"></main>
+<section id="test-results"></section>
+
+<script>
+// ============================================================================
+// SECCIÓN 0 — BUS DE EVENTOS (igual que vision9)
+// ============================================================================
+class EventBus {
+  constructor() { this.listeners = new Map(); }
+  on(e, cb) {
+    if (!this.listeners.has(e)) this.listeners.set(e, new Set());
+    this.listeners.get(e).add(cb);
+  }
+  off(e, cb) { this.listeners.get(e)?.delete(cb); }
+  emit(e, p) { this.listeners.get(e)?.forEach(cb => { try { cb(p); } catch (err) { console.error(err); } }); }
+}
+
+// ============================================================================
+// SECCIÓN 1 — REGISTRO DE MÓDULOS
+// ============================================================================
+const Registry = (() => {
+  const mods = new Map();
+  return {
+    add(id, def) { mods.set(id, { id, ...def }); },
+    get(id) { return mods.get(id); },
+    all() { return [...mods.values()]; },
+    clear() { mods.clear(); },
+  };
+})();
+
+// ============================================================================
+// SECCIÓN 2 — ORQUESTADOR (igual patrón que vision9)
+// ============================================================================
+class Orchestrator {
+  constructor(registry, rootEl) {
+    this.registry = registry;
+    this.rootEl = rootEl;
+    this.bus = new EventBus();
+    this.ctx = { bus: this.bus, orchestrator: this };
+    this.active = new Map();
+  }
+  boot() {
+    for (const mod of this.registry.all()) this.activate(mod.id);
+    this._loop();
+  }
+  activate(id) {
+    if (this.active.has(id)) return;
+    const mod = this.registry.get(id);
+    if (!mod) return;
+    for (const dep of (mod.depende || [])) this.activate(dep);
+    const container = document.createElement('div');
+    container.className = 'module';
+    container.dataset.id = id;
+    this.rootEl.appendChild(container);
+    const localCtx = { ...this.ctx, container, deps: this._collectAPIs(mod.depende || []) };
+    try { mod.mount?.(localCtx); }
+    catch (e) {
+      container.innerHTML = `<p style="color:#f66">Error ${id}: ${e.message}</p>`;
+      console.error(e); return;
+    }
+    this.active.set(id, {
+      container, api: mod.api || null, frame: mod.frame || null,
+      unmount: mod.unmount || null, ctx: localCtx,
+    });
+    this.bus.emit('module:activated', { id });
+  }
+  deactivate(id) {
+    const entry = this.active.get(id);
+    if (!entry) return;
+    entry.unmount?.(entry.ctx);
+    entry.container.remove();
+    this.active.delete(id);
+    this.bus.emit('module:deactivated', { id });
+  }
+  _collectAPIs(deps) {
+    const apis = {};
+    for (const d of deps) {
+      const e = this.active.get(d);
+      if (e?.api) apis[d] = e.api;
+    }
+    return apis;
+  }
+  _loop() {
+    const tick = () => {
+      for (const [, e] of this.active) {
+        if (e.frame) { try { e.frame(e.ctx); } catch (err) { console.error(err); } }
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+}
+
+// ============================================================================
+// SECCIÓN 3 — UTILIDADES: COORDENADAS
+// ============================================================================
+// Tres sistemas:
+//   pantalla: píxeles, (x, y) con origen arriba-izquierda
+//   campo visual: grados de ángulo, (u, v) con origen en el centro de mirada
+//   log-polar: (r, θ), r = log(distancia), θ = ángulo
+//
+// El warp se PIENSA en log-polar, se APLICA en pantalla.
+// ============================================================================
+
+const Coord = {
+  // pantalla -> campo visual (asumiendo calibración lineal simple)
+  screenToField(x, y, w, h, fovDeg) {
+    const cx = w / 2, cy = h / 2;
+    const degPerPx = fovDeg / w;
+    return { u: (x - cx) * degPerPx, v: (y - cy) * degPerPx };
+  },
+  fieldToScreen(u, v, w, h, fovDeg) {
+    const cx = w / 2, cy = h / 2;
+    const pxPerDeg = w / fovDeg;
+    return { x: cx + u * pxPerDeg, y: cy + v * pxPerDeg };
+  },
+  cartToLog(u, v) {
+    const r = Math.hypot(u, v);
+    const theta = Math.atan2(v, u);
+    return { r: Math.log(Math.max(r, 1e-6)), theta, rRaw: r };
+  },
+  logToCart(rLog, theta) {
+    const r = Math.exp(rLog);
+    return { u: r * Math.cos(theta), v: r * Math.sin(theta) };
+  },
+};
+
+// ============================================================================
+// SECCIÓN 4 — CONFIG (serializable a JSON)
+// ============================================================================
+// Este objeto es el "perfil del paciente". Se puede guardar/cargar como JSON.
+// Nada de código: solo datos. Validable.
+// ============================================================================
+const DEFAULT_CONFIG = {
+  version: "1.0",
+  eye: "right", // "left" | "right" | "both"
+  fovDeg: 60,   // campo visual horizontal aproximado
+  escotoma: {
+    // Un escotoma es una mancha. Aproximamos con un polígono en campo visual.
+    // Cada punto es (u, v) en grados respecto al centro de mirada.
+    polygon: [
+      { u: -3, v: -3 }, { u: 3, v: -3 },
+      { u: 3, v: 3 },   { u: -3, v: 3 },
+    ],
+    // Sensibilidad dentro del polígono (0 = ciego, 1 = normal)
+    sensitivity: 0.0,
+  },
+  ring: {
+    // Anillo sano donde redirigimos
+    innerDeg: 3,   // radio interior del anillo
+    outerDeg: 9,   // radio exterior
+    // Sensibilidad media del anillo (para compensar con realce)
+    sensitivity: 0.6,
+  },
+  warp: {
+    // Función de desplazamiento radial: r' = f(r)
+    // Usamos una sigmoide suave para evitar costuras.
+    smoothness: 0.5, // 0 = duro, 1 = muy suave
+    isotropy: 0.8,   // 1 = isotrópico perfecto
+  },
+  enhance: {
+    contrastBoost: 0.3,   // sobre zona redirigida
+    saturationBoost: 0.2,
+  },
+  temporal: {
+    maxLatencyMs: 50,
+    predictionMs: 30, // predicción de sacadas
+  },
+};
+
+// ============================================================================
+// SECCIÓN 5 — MÓDULO: config-loader
+// ============================================================================
+// Carga un JSON, lo valida, lo publica en el bus.
+// Si algo no cuadra, NO se emite. Los demás módulos no arrancan con datos malos.
+// ============================================================================
+(() => {
+  function validate(cfg) {
+    const errs = [];
+    if (!cfg.escotoma?.polygon?.length >= 3) errs.push("escotoma.polygon necesita >=3 puntos");
+    if (cfg.ring?.innerDeg >= cfg.ring?.outerDeg) errs.push("ring.inner debe ser < ring.outer");
+    if (cfg.warp?.smoothness < 0 || cfg.warp?.smoothness > 1) errs.push("warp.smoothness fuera de [0,1]");
+    return errs;
+  }
+
+  const api = {
+    load(jsonString) {
+      let cfg;
+      try { cfg = JSON.parse(jsonString); }
+      catch (e) { return { ok: false, errors: ["JSON inválido: " + e.message] }; }
+      const errors = validate(cfg);
+      if (errors.length) return { ok: false, errors };
+      return { ok: true, config: cfg };
+    },
+    getDefault() { return structuredClone(DEFAULT_CONFIG); },
+    toJSON(cfg) { return JSON.stringify(cfg, null, 2); },
+  };
+
+  Registry.add('config-loader', {
+    nombre: '⚙️ Config',
+    activo: true,
+    api,
+    mount(c) {
+      c.container.innerHTML = `
+        <h2>⚙️ Config — datos serializables</h2>
+        <div class="desc">
+          Toda la calibración vive en un JSON. Si un dato no cuadra, el módulo
+          no emite y los demás no arrancan con datos malos. Separación estricta
+          entre <em>datos</em> y <em>código</em>.
+        </div>
+        <div class="row">
+          <canvas id="cv-cfg" width="400" height="300"></canvas>
+          <div>
+            <button id="btn-load-default">Cargar config por defecto</button>
+            <div class="info" id="cfg-info">Esperando…</div>
+          </div>
+        </div>
+      `;
+      const bus = c.bus;
+      c.container.querySelector('#btn-load-default').addEventListener('click', () => {
+        const cfg = api.getDefault();
+        const errors = validate(cfg);
+        const info = c.container.querySelector('#cfg-info');
+        if (errors.length) { info.textContent = "❌ " + errors.join(" | "); return; }
+        info.textContent = `✅ Config válida · ojo: ${cfg.eye} · FOV: ${cfg.fovDeg}°`;
+        bus.emit('config:loaded', cfg);
+        // Dibujar escotoma en campo visual
+        const cv = c.container.querySelector('#cv-cfg');
+        const g = cv.getContext('2d');
+        g.clearRect(0, 0, cv.width, cv.height);
+        const cx = cv.width / 2, cy = cv.height / 2;
+        const scale = Math.min(cv.width, cv.height) / (cfg.fovDeg * 1.2);
+        // escotoma
+        g.fillStyle = 'rgba(255,80,80,0.35)';
+        g.beginPath();
+        cfg.escotoma.polygon.forEach((p, i) => {
+          const x = cx + p.u * scale, y = cy + p.v * scale;
+          if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+        });
+        g.closePath(); g.fill();
+        // anillo
+        g.strokeStyle = 'rgba(100,220,255,0.7)';
+        g.lineWidth = 1.5;
+        g.beginPath();
+        g.arc(cx, cy, cfg.ring.innerDeg * scale, 0, Math.PI * 2);
+        g.arc(cx, cy, cfg.ring.outerDeg * scale, 0, Math.PI * 2);
+        g.stroke();
+        // cruz central
+        g.strokeStyle = '#446'; g.beginPath();
+        g.moveTo(cx - 5, cy); g.lineTo(cx + 5, cy);
+        g.moveTo(cx, cy - 5); g.lineTo(cx, cy + 5); g.stroke();
+      });
+    },
+  });
+})();
+
+// ============================================================================
+// SECCIÓN 6 — MÓDULO: gaze-tracker (stub determinista)
+// ============================================================================
+// En producción: eye-tracker real. Aquí: ratón, para probar.
+// El contrato: emite {u, v, tMs} en campo visual cada frame.
+// ============================================================================
+(() => {
+  const api = {
+    getGaze() { return state.last; },
+    isStub() { return true; },
+  };
+  const state = { last: { u: 0, v: 0, tMs: 0 } };
+
+  Registry.add('gaze-tracker', {
+    nombre: '👁 Gaze',
+    depende: ['config-loader'],
+    activo: true,
+    api,
+    mount(c) {
+      c.container.innerHTML = `
+        <h2>👁 Gaze tracker (stub)</h2>
+        <div class="desc">
+          Contrato: <code>{u, v, tMs}</code> en campo visual cada frame.
+          Aquí es el ratón; en producción sería un eye-tracker. El resto del
+          sistema no sabe la diferencia.
+        </div>
+        <canvas id="cv-gaze" width="600" height="300" style="cursor:crosshair;"></canvas>
+        <div class="info" id="gaze-info">—</div>
+      `;
+      const cv = c.container.querySelector('#cv-gaze');
+      const g = cv.getContext('2d');
+      let lastT = performance.now();
+      cv.addEventListener('mousemove', (e) => {
+        const rect = cv.getBoundingClientRect();
+        const x = (e.clientX - rect.left) * cv.width / rect.width;
+        const y = (e.clientY - rect.top) * cv.height / rect.height;
+        // pantalla -> campo visual
+        const cfg = DEFAULT_CONFIG;
+        const f = Coord.screenToField(x, y, cv.width, cv.height, cfg.fovDeg);
+        const now = performance.now();
+        const dt = now - lastT; lastT = now;
+        state.last = { u: f.u, v: f.v, tMs: now };
+        c.bus.emit('gaze:update', { ...state.last, dtMs: dt });
+        c.container.querySelector('#gaze-info').textContent =
+          `u=${f.u.toFixed(2)}° v=${f.v.toFixed(2)}° dt=${dt.toFixed(1)}ms`;
+        // dibujo
+        g.clearRect(0, 0, cv.width, cv.height);
+        g.strokeStyle = '#224'; g.beginPath();
+        g.moveTo(cv.width/2, 0); g.lineTo(cv.width/2, cv.height);
+        g.moveTo(0, cv.height/2); g.lineTo(cv.width, cv.height/2); g.stroke();
+        g.fillStyle = '#66ddff';
+        g.beginPath(); g.arc(x, y, 6, 0, Math.PI*2); g.fill();
+      });
+    },
+  });
+})();
+
+// ============================================================================
+// SECCIÓN 7 — MÓDULO: warp-engine
+// ============================================================================
+// El corazón. Recibe config + gaze, calcula un warp field.
+// El warp se PIENSA en log-polar, se APLICA en pantalla.
+// No sabe de eye-trackers ni de shaders. Solo recibe datos y devuelve un array.
+// ============================================================================
+(() => {
+  // Función de desplazamiento radial: r' = f(r)
+  // f(r) = r para r > outerDeg
+  // f(r) = ... para r dentro del anillo y del escotoma
+  // TODO: implementar f() correctamente. Placeholder: identidad.
+  function radialDisplacement(rDeg, cfg) {
+    // Placeholder. Aquí va la matemática del warp.
+    // Idea: la zona del escotoma (r < inner) se "empuja" al anillo [inner, outer].
+    // La zona del anillo se comprime más hacia fuera.
+    // Debe ser C¹ continua.
+    return rDeg;
+  }
+
+  const api = {
+    /**
+     * Genera un warp field.
+     * @param {object} cfg  config validada
+     * @param {object} gaze {u, v, tMs}
+     * @param {number} w    ancho pantalla
+     * @param {number} h    alto pantalla
+     * @returns {{ vectors: Float32Array, w: number, h: number }}
+     *   vectors[k*2..k*2+1] = (du, dv) en grados de campo visual
+     *   para el píxel k = i + j*w.
+     */
+    compute(cfg, gaze, w, h) {
+      const vectors = new Float32Array(w * h * 2);
+      const cx = w / 2, cy = h / 2;
+      for (let j = 0; j < h; j++) {
+        for (let i = 0; i < w; i++) {
+          const k = i + j * w;
+          // pantalla -> campo visual relativo a gaze
+          const f = Coord.screenToField(i, j, w, h, cfg.fovDeg);
+          const ru = f.u - gaze.u;
+          const rv = f.v - gaze.v;
+          const { rRaw, theta } = Coord.cartToLog(ru, rv);
+          const rNew = radialDisplacement(rRaw, cfg);
+          const cart = Coord.logToCart(Math.log(Math.max(rNew, 1e-6)), theta);
+          // desplazamiento en grados
+          vectors[k*2]     = cart.u - ru;
+          vectors[k*2 + 1] = cart.v - rv;
+        }
+      }
+      return { vectors, w, h };
+    },
+    /**
+     * Valida un warp field. Comprueba:
+     *  - no folding (Jacobiano > 0 en todo punto)
+     *  - no NaN
+     * @returns {{ok: boolean, errors: string[]}}
+     */
+    validate(warp) {
+      const errs = [];
+      const { vectors, w, h } = warp;
+      for (let i = 0; i < vectors.length; i++) {
+        if (!Number.isFinite(vectors[i])) { errs.push("NaN en vector " + i); break; }
+      }
+      // TODO: chequeo de Jacobiano (folding)
+      // Placeholder: asumimos OK
+      return { ok: errs.length === 0, errors: errs };
+    },
+  };
+
+  Registry.add('warp-engine', {
+    nombre: '🌀 Warp engine',
+    depende: ['config-loader'],
+    activo: true,
+    api,
+    mount(c) {
+      c.container.innerHTML = `
+        <h2>🌀 Warp engine — el corazón</h2>
+        <div class="desc">
+          Recibe config + gaze, devuelve un warp field (array de desplazamientos).
+          El warp se piensa en log-polar, se aplica en pantalla. No sabe de
+          eye-trackers ni de shaders: es un traductor de datos.
+        </div>
+        <div class="info" id="warp-info">Esperando config y gaze…</div>
+      `;
+      let cfg = null, gaze = null;
+      c.bus.on('config:loaded', (c2) => { cfg = c2; maybeCalc(); });
+      c.bus.on('gaze:update', (g) => { gaze = g; maybeCalc(); });
+
+      function maybeCalc() {
+        if (!cfg || !gaze) return;
+        const w = 200, h = 150; // resolución baja para debug
+        const warp = api.compute(cfg, gaze, w, h);
+        const v = api.validate(warp);
+        c.container.querySelector('#warp-info').textContent =
+          `Warp ${w}×${h} · válido: ${v.ok ? 'sí' : 'NO: ' + v.errors.join(', ')} · ` +
+          `gaze=(${gaze.u.toFixed(2)}, ${gaze.v.toFixed(2)})`;
+        c.bus.emit('warp:ready', warp);
+      }
+    },
+  });
+})();
+
+// ============================================================================
+// SECCIÓN 8 — MÓDULO: renderer
+// ============================================================================
+// Pinta una escena de prueba aplicando el warp field.
+// En producción: canvas o shader. Aquí: canvas 2D para debug.
+// ============================================================================
+(() => {
+  // Escena de prueba: rejilla + caras + texto. Reutilizable.
+  function makeScene(w, h) {
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const g = cv.getContext('2d');
+    g.fillStyle = '#111'; g.fillRect(0, 0, w, h);
+    // rejilla
+    g.strokeStyle = '#333'; g.lineWidth = 1;
+    for (let x = 0; x < w; x += 30) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+    for (let y = 0; y < h; y += 30) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+    // caras
+    g.fillStyle = '#ffcc99';
+    g.beginPath(); g.arc(w/2, h/2, 40, 0, Math.PI*2); g.fill();
+    g.fillStyle = '#000';
+    g.beginPath(); g.arc(w/2 - 14, h/2 - 8, 4, 0, Math.PI*2); g.fill();
+    g.beginPath(); g.arc(w/2 + 14, h/2 - 8, 4, 0, Math.PI*2); g.fill();
+    g.strokeStyle = '#000'; g.lineWidth = 3;
+    g.beginPath(); g.arc(w/2, h/2 + 8, 20, 0.2, Math.PI - 0.2); g.stroke();
+    // texto
+    g.fillStyle = '#fff';
+    g.font = 'bold 22px sans-serif';
+    g.fillText('TEXTO', 20, h - 20);
+    return cv;
+  }
+
+  Registry.add('renderer', {
+    nombre: '🖼 Renderer',
+    depende: ['warp-engine'],
+    activo: true,
+    mount(c) {
+      c.container.innerHTML = `
+        <h2>🖼 Renderer — aplicación del warp</h2>
+        <div class="desc">
+          Pinta la escena de prueba aplicando el warp field. Compara original
+          (izquierda) con warped (derecha). En producción: shader.
+        </div>
+        <div class="row">
+          <canvas id="cv-orig" width="400" height="300"></canvas>
+          <canvas id="cv-warp" width="400" height="300"></canvas>
+        </div>
+        <div class="info" id="render-info">Esperando warp…</div>
+      `;
+      const cvOrig = c.container.querySelector('#cv-orig');
+      const cvWarp = c.container.querySelector('#cv-warp');
+      const scene = makeScene(cvOrig.width, cvOrig.height);
+      cvOrig.getContext('2d').drawImage(scene, 0, 0);
+      const srcData = scene.getContext('2d').getImageData(0, 0, scene.width, scene.height);
+      const dstData = cvWarp.getContext('2d').createImageData(cvWarp.width, cvWarp.height);
+
+      c.bus.on('warp:ready', (warp) => {
+        // warp tiene resolución baja (200x150); escalamos a 400x300 para pintar
+        const scaleX = cvWarp.width / warp.w;
+        const scaleY = cvWarp.height / warp.h;
+        const { vectors, w, h } = warp;
+        const cfg = DEFAULT_CONFIG;
+        for (let j = 0; j < cvWarp.height; j++) {
+          for (let i = 0; i < cvWarp.width; i++) {
+            // pixel destino
+            const wi = Math.floor(i / scaleX);
+            const wj = Math.floor(j / scaleY);
+            const k = wi + wj * w;
+            const du = vectors[k*2], dv = vectors[k*2 + 1];
+            // destino en campo visual
+            const f = Coord.screenToField(i, j, cvWarp.width, cvWarp.height, cfg.fovDeg);
+            // fuente = destino - desplazamiento
+            const fSrcU = f.u - du;
+            const fSrcV = f.v - dv;
+            const p = Coord.fieldToScreen(fSrcU, fSrcV, cvWarp.width, cvWarp.height, cfg.fovDeg);
+            const sx = Math.max(0, Math.min(cvWarp.width - 1, Math.round(p.x)));
+            const sy = Math.max(0, Math.min(cvWarp.height - 1, Math.round(p.y)));
+            const si = (sy * cvWarp.width + sx) * 4;
+            const di = (j * cvWarp.width + i) * 4;
+            dstData.data[di]     = srcData.data[si];
+            dstData.data[di + 1] = srcData.data[si + 1];
+            dstData.data[di + 2] = srcData.data[si + 2];
+            dstData.data[di + 3] = 255;
+          }
+        }
+        cvWarp.getContext('2d').putImageData(dstData, 0, 0);
+        c.container.querySelector('#render-info').textContent =
+          `Warp aplicado · ${warp.w}×${warp.h} · escena ${cvWarp.width}×${cvWarp.height}`;
+      });
+    },
+  });
+})();
+
+// ============================================================================
+// SECCIÓN 9 — MÓDULO: enhancer (realce de zona redirigida)
+// ============================================================================
+// Sube contraste y saturación en la zona que recibe info redirigida.
+// No inventa: amplifica lo medido. Determinista.
+// ============================================================================
+(() => {
+  const api = {
+    /**
+     * Aplica realce local.
+     * @param {Uint8ClampedArray} data  RGBA
+     * @param {number} w
+     * @param {number} h
+     * @param {Uint8Array} mask  máscara 0..255 (qué zona recibe warp)
+     * @param {object} cfg
+     */
+    apply(data, w, h, mask, cfg) {
+      const cB = cfg.enhance.contrastBoost;
+      const sB = cfg.enhance.saturationBoost;
+      for (let k = 0; k < w * h; k++) {
+        const m = mask[k] / 255;
+        if (m < 0.05) continue; // no tocar lo no redirigido
+        const p = k * 4;
+        // contraste
+        const r = (data[p]     / 255 - 0.5) * (1 + cB * m) + 0.5;
+        const g = (data[p + 1] / 255 - 0.5) * (1 + cB * m) + 0.5;
+        const b = (data[p + 2] / 255 - 0.5) * (1 + cB * m) + 0.5;
+        // saturación
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        const nr = Math.max(0, Math.min(1, lum + (r - lum) * (1 + sB * m)));
+        const ng = Math.max(0, Math.min(1, lum + (g - lum) * (1 + sB * m)));
+        const nb = Math.max(0, Math.min(1, lum + (b - lum) * (1 + sB * m)));
+        data[p]     = nr * 255;
+        data[p + 1] = ng * 255;
+        data[p + 2] = nb * 255;
+      }
+    },
+  };
+  Registry.add('enhancer', {
+    nombre: '✨ Enhancer',
+    depende: [],
+    activo: true,
+    api,
+    mount(c) {
+      c.container.innerHTML = `
+        <h2>✨ Enhancer — realce de zona redirigida</h2>
+        <div class="desc">
+          Sube contraste y saturación <em>solo</em> en la zona que recibe
+          información redirigida. No inventa nada: amplifica lo medido.
+          Determinista, sin IA.
+        </div>
+        <div class="info" id="enh-info">Listo. Se aplica cuando hay warp.</div>
+      `;
+    },
+  });
+})();
+
+// ============================================================================
+// SECCIÓN 10 — MÓDULO: trainer (rehabilitación)
+// ============================================================================
+// Log determinista de sesiones. Guarda: config, duración, métricas.
+// El rehabilitador ajusta la config según el progreso.
+// ============================================================================
+(() => {
+  const sessions = [];
+  const api = {
+    startSession(label) {
+      const s = { label, startMs: performance.now(), events: [] };
+      sessions.push(s);
+      return s;
+    },
+    logEvent(session, kind, data) {
+      session.events.push({ tMs: performance.now() - session.startMs, kind, data });
+    },
+    endSession(session) {
+      session.endMs = performance.now();
+      session.durationMs = session.endMs - session.startMs;
+      return session;
+    },
+    exportJSON() { return JSON.stringify(sessions, null, 2); },
+    count() { return sessions.length; },
+  };
+  Registry.add('trainer', {
+    nombre: '📋 Trainer',
+    depende: [],
+    activo: true,
+    api,
+    mount(c) {
+      c.container.innerHTML = `
+        <h2>📋 Trainer — rehabilitación</h2>
+        <div class="desc">
+          Registro de sesiones. Cada sesión guarda config, duración y eventos.
+          Exportable a JSON. El rehabilitador ajusta la config entre sesiones
+          según el progreso.
+        </div>
+        <button id="btn-start">Iniciar sesión</button>
+        <button id="btn-export">Exportar JSON</button>
+        <div class="info" id="trainer-info">Sesiones: 0</div>
+      `;
+      let current = null;
+      c.container.querySelector('#btn-start').addEventListener('click', () => {
+        current = api.startSession("sesión " + (sessions.length + 1));
+        c.container.querySelector('#trainer-info').textContent =
+          `Sesión "${current.label}" iniciada`;
+      });
+      c.container.querySelector('#btn-export').addEventListener('click', () => {
+        if (current) api.endSession(current);
+        const json = api.exportJSON();
+        const blob = new Blob([json], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'sesiones.json';
+        a.click();
+      });
+      // log automático de eventos de config
+      c.bus.on('config:loaded', (cfg) => {
+        if (current) api.logEvent(current, 'config', cfg);
+      });
+      c.bus.on('module:activated', (e) => {
+        if (current) api.logEvent(current, 'module:on', e);
+      });
+    },
+  });
+})();
+
+// ============================================================================
+// SECCIÓN 11 — TESTS
+// ============================================================================
+function runTests() {
+  const results = [];
+  const t = (name, fn) => {
+    try { fn(); results.push({ name, ok: true }); }
+    catch (e) { results.push({ name, ok: false, error: e.message }); }
+  };
+  const assert = (c, m) => { if (!c) throw new Error(m); };
+
+  t('Coord: screenToField centro -> (0,0)', () => {
+    const f = Coord.screenToField(400, 300, 800, 600, 60);
+    assert(Math.abs(f.u) < 1e-6 && Math.abs(f.v) < 1e-6, `no es (0,0): ${f.u},${f.v}`);
+  });
+  t('Coord: roundtrip screen->field->screen', () => {
+    const w = 800, h = 600, fov = 60;
+    const f = Coord.screenToField(123, 456, w, h, fov);
+    const p = Coord.fieldToScreen(f.u, f.v, w, h, fov);
+    assert(Math.abs(p.x - 123) < 0.01 && Math.abs(p.y - 456) < 0.01, 'roundtrip roto');
+  });
+  t('Coord: cartToLog/logToCart roundtrip', () => {
+    const a = Coord.cartToLog(3, 4);
+    const b = Coord.logToCart(a.r, a.theta);
+    assert(Math.abs(b.u - 3) < 1e-3 && Math.abs(b.v - 4) < 1e-3, 'roundtrip log roto');
+  });
+
+  t('Config: valida una config por defecto', () => {
+    const errors = [];
+    const cfg = DEFAULT_CONFIG;
+    if (cfg.ring.innerDeg >= cfg.ring.outerDeg) errors.push("ring");
+    if (cfg.escotoma.polygon.length < 3) errors.push("polygon");
+    assert(errors.length === 0, "config por defecto inválida");
+  });
+
+  t('Módulos registrados y dependencias coherentes', () => {
+    const ids = Registry.all().map(m => m.id);
+    for (const req of ['config-loader', 'gaze-tracker', 'warp-engine', 'renderer', 'enhancer', 'trainer']) {
+      assert(ids.includes(req), `falta módulo ${req}`);
+    }
+    const warp = Registry.get('warp-engine');
+    assert(warp.depende.includes('config-loader'), 'warp-engine debe depender de config-loader');
+    const renderer = Registry.get('renderer');
+    assert(renderer.depende.includes('warp-engine'), 'renderer debe depender de warp-engine');
+  });
+
+  t('Warp engine: compute no peta y validate dice ok', () => {
+    const warp = Registry.get('warp-engine').api;
+    const cfg = DEFAULT_CONFIG;
+    const gaze = { u: 0, v: 0, tMs: 0 };
+    const w = warp.compute(cfg, gaze, 50, 40);
+    const v = warp.validate(w);
+    assert(v.ok, 'warp no válido: ' + v.errors.join(', '));
+    assert(w.vectors.length === 50 * 40 * 2, 'tamaño incorrecto');
+  });
+
+  t('Enhancer: no toca si mask = 0', () => {
+    const enh = Registry.get('enhancer').api;
+    const data = new Uint8ClampedArray([100, 100, 100, 255]);
+    const mask = new Uint8Array([0]);
+    const cfg = DEFAULT_CONFIG;
+    enh.apply(data, 1, 1, mask, cfg);
+    assert(data[0] === 100, 'debería no cambiar');
+  });
+
+  const ok = results.filter(r => r.ok).length;
+  console.log(`=== TESTS: ${ok}/${results.length} OK ===`);
+  results.forEach(r => console.log(r.ok ? `✅ ${r.name}` : `❌ ${r.name}: ${r.error}`));
+  const el = document.getElementById('test-results');
+  el.innerHTML = results.map(r =>
+    `<div class="${r.ok ? 'ok' : 'fail'}">${r.ok ? '✅' : '❌'} ${r.name}${r.ok ? '' : ' — ' + r.error}</div>`
+  ).join('') + `<div style="margin-top:8px;color:#aaccff;">Total: ${ok}/${results.length}</div>`;
+
+  return { ok, fail: results.length - ok };
+}
+
+// ============================================================================
+// SECCIÓN 12 — ARRANQUE
+// ============================================================================
+window.addEventListener('load', () => {
+  runTests();
+  const orch = new Orchestrator(Registry, document.getElementById('root'));
+  orch.boot();
+});
+</script>
+</body>
+</html>
