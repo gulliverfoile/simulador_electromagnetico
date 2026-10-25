@@ -1,0 +1,1503 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Simulador de patologías — Hexagonal + Manual + Optimizador</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #0a0a1a; color: #e0e0ff; padding: 16px;
+  }
+  h1 { text-align: center; color: #aaccff; font-size: clamp(1.2rem, 3vw, 1.5rem); margin-bottom: 4px; }
+  .subtitle { text-align: center; color: #8899bb; font-size: 0.82rem; margin-bottom: 16px; }
+  .disclaimer {
+    max-width: 1200px; margin: 0 auto 16px; padding: 10px 14px;
+    background: rgba(180,120,0,0.15); border-left: 3px solid #f59e0b;
+    border-radius: 6px; font-size: 0.8rem; color: #ffd89b; line-height: 1.5;
+  }
+  main#root { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  .module {
+    background: rgba(20,20,50,0.85); border: 1px solid rgba(100,100,200,0.3);
+    border-radius: 12px; padding: 14px;
+  }
+  .module h2 { color: #aaccff; font-size: 0.95rem; margin-bottom: 6px; }
+  .module .desc { color: #8899bb; font-size: 0.78rem; margin-bottom: 10px; line-height: 1.5; }
+  .controls { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+  button {
+    padding: 5px 11px; border-radius: 6px; border: 1px solid rgba(150,150,220,0.4);
+    background: rgba(30,30,60,0.9); color: #fff; cursor: pointer; font-size: 0.78rem;
+    transition: background 0.12s;
+  }
+  button:hover { background: rgba(50,50,90,0.9); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.active { border-color: #66ddff; background: linear-gradient(135deg, #3a3a7a, #2a2a5a); }
+  button.primary { background: #3b82f6; border-color: #3b82f6; }
+  button.primary:hover { background: #2563eb; }
+  button.tiny { padding: 2px 8px; font-size: 0.7rem; }
+  .param-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
+  .param-row label { flex: 0 0 130px; font-size: 0.78rem; color: #aaccff; }
+  .param-row input[type=range] { flex: 1; }
+  .param-row span { flex: 0 0 55px; text-align: right; font-family: monospace; font-size: 0.78rem; color: #ffcc00; }
+  .corr-section {
+    background: rgba(10,10,30,0.6); border-radius: 8px; padding: 10px; margin: 8px 0;
+    border-left: 3px solid #3b82f6;
+  }
+  .corr-section h3 { color: #aaccff; font-size: 0.85rem; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 8px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+  @media (max-width: 900px) { .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+  canvas { background: #04040a; border-radius: 6px; display: block; width: 100%; height: auto; }
+  .canvas-label { text-align: center; font-size: 0.72rem; color: #8899bb; margin-top: 3px; }
+  .info {
+    font-family: monospace; font-size: 0.72rem; color: #99bbee;
+    background: #0a0a18; padding: 7px 9px; border-radius: 5px; margin-top: 6px;
+    line-height: 1.5; word-break: break-word;
+  }
+  textarea {
+    width: 100%; min-height: 140px; background: #0a0a18; color: #e0e0ff;
+    border: 1px solid rgba(150,150,220,0.3); border-radius: 6px;
+    padding: 8px; font-family: monospace; font-size: 0.72rem;
+    resize: vertical;
+  }
+  .results-table { width: 100%; border-collapse: collapse; font-family: monospace; font-size: 0.75rem; margin-top: 6px; }
+  .results-table th, .results-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid rgba(100,100,200,0.2); }
+  .results-table th { color: #aaccff; font-weight: normal; }
+  .bar { display: inline-block; height: 10px; background: #3b82f6; border-radius: 2px; vertical-align: middle; }
+  .bar.best { background: #10b981; }
+  #test-results {
+    max-width: 1200px; margin: 16px auto;
+    background: rgba(20,20,50,0.85); border: 1px solid rgba(100,100,200,0.3);
+    border-radius: 12px; padding: 14px; font-family: monospace; font-size: 0.74rem;
+  }
+  .ok { color: #66ffa0; } .fail { color: #ff6666; }
+  code { background: #1a1a3a; padding: 1px 5px; border-radius: 3px; color: #ffcc00; }
+</style>
+</head>
+<body>
+
+<h1>🔬 Simulador hexagonal — manual + optimizador</h1>
+<p class="subtitle">Dominio puro · Puertos/adaptadores · Eventos · Casos JSON · Sliders + búsqueda</p>
+
+<div class="disclaimer">
+  ⚠️ <strong>Esto es un juguete.</strong> Aplica filtros deterministas a imágenes y calcula
+  métricas de píxeles (proxy o SSIM contra referencia). No simula el ojo, no simula el cerebro,
+  no valida clínicamente nada. Sirve para generar hipótesis y descartar malas ideas rápido.
+</div>
+
+<main id="root"></main>
+<section id="test-results"></section>
+
+<script>
+'use strict';
+
+// ============================================================================
+// CONTRATOS — Puertos y eventos
+// ============================================================================
+// PORT imageSource: { getFrame(): CanvasImageSource | null, stop(): void }
+// PORT renderer:    { render(canvas, imageData): void, clear(canvas): void }
+// PORT clock:       { now(): number }
+// PORT persistence: { save(key, data): void, load(key): any | null }
+// PORT case:        { get(): CaseJson | null, set(CaseJson): boolean }
+// PORT optimizer:   { getLastResult(): OptimizationResult | null }
+// PORT manualParams:{ get(correctionId): object, getAll(): object }
+//
+// EVENTOS:
+//   'module:mounted'              { id }
+//   'case:loaded'                 { case }
+//   'case:invalid'                { errors }
+//   'case:updateManual'           { manual }        // sync manual → textarea JSON
+//   'manual:updated'              { correctionId, params }
+//   'optimization:started'        {}
+//   'optimization:finished'       { result, elapsed }
+//   'optimization:applyToManual'  { correctionId, params }
+//   'error'                       { module, message }
+// ============================================================================
+
+// ============================================================================
+// 1. EVENT BUS
+// ============================================================================
+class EventBus {
+  constructor() { this.listeners = new Map(); }
+  on(evt, cb) {
+    if (!this.listeners.has(evt)) this.listeners.set(evt, new Set());
+    this.listeners.get(evt).add(cb);
+    return () => this.off(evt, cb);
+  }
+  off(evt, cb) { this.listeners.get(evt)?.delete(cb); }
+  emit(evt, payload) {
+    this.listeners.get(evt)?.forEach(cb => {
+      try { cb(payload); }
+      catch (e) { console.error(`[bus:${evt}]`, e); this.emit('error', { module: 'bus', message: e.message }); }
+    });
+  }
+}
+
+// ============================================================================
+// 2. DOMINIO — Funciones puras
+// ============================================================================
+const Filters = {
+  identity(src) {
+    return new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+  },
+  blur(src, radius) {
+    if (radius <= 0) return Filters.identity(src);
+    const w = src.width, h = src.height;
+    const out = new ImageData(w, h);
+    const s = src.data, d = out.data;
+    const r = Math.max(1, Math.floor(radius));
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let R = 0, G = 0, B = 0, n = 0;
+        for (let dy = -r; dy <= r; dy++) {
+          const sy = Math.min(h - 1, Math.max(0, y + dy));
+          for (let dx = -r; dx <= r; dx++) {
+            const sx = Math.min(w - 1, Math.max(0, x + dx));
+            const i = (sy * w + sx) * 4;
+            R += s[i]; G += s[i+1]; B += s[i+2]; n++;
+          }
+        }
+        const o = (y * w + x) * 4;
+        d[o] = R / n; d[o+1] = G / n; d[o+2] = B / n; d[o+3] = 255;
+      }
+    }
+    return out;
+  },
+  yellowTint(src, strength) {
+    const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+    const s = strength, d = out.data;
+    for (let i = 0; i < d.length; i += 4) {
+      d[i]   = Math.min(255, d[i]   * (1 + 0.05 * s));
+      d[i+1] = Math.min(255, d[i+1] * (1 + 0.15 * s));
+      d[i+2] = Math.max(0,   d[i+2] * (1 - 0.55 * s));
+    }
+    return out;
+  },
+  scotoma(src, cx, cy, radius, falloff) {
+    const w = src.width, h = src.height;
+    const out = new ImageData(new Uint8ClampedArray(src.data), w, h);
+    const d = out.data, r2 = radius * radius;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const dx = x - cx, dy = y - cy, dd = dx*dx + dy*dy;
+        if (dd < r2) {
+          const t = 1 - Math.sqrt(dd) / radius;
+          const mask = Math.pow(t, falloff);
+          const i = (y * w + x) * 4;
+          d[i] *= (1 - mask); d[i+1] *= (1 - mask); d[i+2] *= (1 - mask);
+        }
+      }
+    }
+    return out;
+  },
+  tunnel(src, innerR, outerR) {
+    const w = src.width, h = src.height;
+    const out = new ImageData(new Uint8ClampedArray(src.data), w, h);
+    const d = out.data, cx = w/2, cy = h/2;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const dd = Math.hypot(x - cx, y - cy);
+        let mask = 0;
+        if (dd > outerR) mask = 1;
+        else if (dd > innerR) mask = (dd - innerR) / (outerR - innerR);
+        const i = (y * w + x) * 4;
+        d[i] *= (1 - mask); d[i+1] *= (1 - mask); d[i+2] *= (1 - mask);
+      }
+    }
+    return out;
+  },
+  colorMatrix(src, m) {
+    const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+    const d = out.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i+1], b = d[i+2];
+      d[i]   = Math.min(255, Math.max(0, m[0][0]*r + m[0][1]*g + m[0][2]*b));
+      d[i+1] = Math.min(255, Math.max(0, m[1][0]*r + m[1][1]*g + m[1][2]*b));
+      d[i+2] = Math.min(255, Math.max(0, m[2][0]*r + m[2][1]*g + m[2][2]*b));
+    }
+    return out;
+  },
+  waveDistort(src, amplitude, frequency) {
+    const w = src.width, h = src.height;
+    const out = new ImageData(w, h);
+    const s = src.data, d = out.data, cx = w/2, cy = h/2;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const dx = x - cx, dy = y - cy;
+        const dd = Math.hypot(dx, dy), th = Math.atan2(dy, dx);
+        const off = amplitude * Math.sin(dd * frequency);
+        const sx = Math.round(cx + Math.cos(th) * (dd + off));
+        const sy = Math.round(cy + Math.sin(th) * (dd + off));
+        const sxx = Math.min(w-1, Math.max(0, sx));
+        const syy = Math.min(h-1, Math.max(0, sy));
+        const si = (syy * w + sxx) * 4, di = (y * w + x) * 4;
+        d[di] = s[si]; d[di+1] = s[si+1]; d[di+2] = s[si+2]; d[di+3] = 255;
+      }
+    }
+    return out;
+  },
+  enhance(src, { contrast = 0, brightness = 0, saturation = 0, blueBoost = 0 }) {
+    const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+    const d = out.data;
+    const cf = 1 + contrast, bf = brightness * 255, sf = 1 + saturation, bbf = 1 + blueBoost;
+    for (let i = 0; i < d.length; i += 4) {
+      let r = d[i], g = d[i+1], b = d[i+2];
+      r = (r - 128) * cf + 128; g = (g - 128) * cf + 128; b = (b - 128) * cf + 128;
+      r += bf; g += bf; b += bf;
+      const lum = 0.299*r + 0.587*g + 0.114*b;
+      r = lum + (r - lum) * sf; g = lum + (g - lum) * sf; b = lum + (b - lum) * sf;
+      b *= bbf;
+      d[i]   = Math.min(255, Math.max(0, r));
+      d[i+1] = Math.min(255, Math.max(0, g));
+      d[i+2] = Math.min(255, Math.max(0, b));
+    }
+    return out;
+  },
+  sharpen(src, { amount = 0.5, radius = 1 }) {
+    const blurred = Filters.blur(src, radius);
+    const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+    const s = src.data, b = blurred.data, d = out.data;
+    for (let i = 0; i < d.length; i += 4) {
+      d[i]   = Math.min(255, Math.max(0, s[i]   + (s[i]   - b[i])   * amount));
+      d[i+1] = Math.min(255, Math.max(0, s[i+1] + (s[i+1] - b[i+1]) * amount));
+      d[i+2] = Math.min(255, Math.max(0, s[i+2] + (s[i+2] - b[i+2]) * amount));
+    }
+    return out;
+  },
+  magnify(src, { scale = 2.0 }) {
+    const w = src.width, h = src.height;
+    const out = new ImageData(w, h);
+    const s = src.data, d = out.data, cx = w/2, cy = h/2;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const dx = x - cx, dy = y - cy;
+        const sx = Math.round(cx + dx / scale);
+        const sy = Math.round(cy + dy / scale);
+        const sxx = Math.min(w-1, Math.max(0, sx));
+        const syy = Math.min(h-1, Math.max(0, sy));
+        const si = (syy * w + sxx) * 4, di = (y * w + x) * 4;
+        d[di] = s[si]; d[di+1] = s[si+1]; d[di+2] = s[si+2]; d[di+3] = 255;
+      }
+    }
+    return out;
+  },
+  daltonize(src, { severity = 1.0 }) {
+    const M = [[0.625, 0.375, 0], [0.7, 0.3, 0], [0, 0.3, 0.7]];
+    const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+    const d = out.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i+1], b = d[i+2];
+      const sr = M[0][0]*r + M[0][1]*g + M[0][2]*b;
+      const sg = M[1][0]*r + M[1][1]*g + M[1][2]*b;
+      const sb = M[2][0]*r + M[2][1]*g + M[2][2]*b;
+      const er = (r - sr) * severity;
+      const eg = (g - sg) * severity;
+      d[i]   = Math.min(255, Math.max(0, sr));
+      d[i+1] = Math.min(255, Math.max(0, sg));
+      d[i+2] = Math.min(255, Math.max(0, sb + 0.5 * (er + eg)));
+    }
+    return out;
+  },
+};
+
+const Metrics = {
+  proxyLegibility: {
+    id: 'proxyLegibility',
+    name: 'Proxy legibilidad (bordes+contraste)',
+    needsReference: false,
+    evaluate(src) {
+      const w = src.width, h = src.height, d = src.data;
+      let edges = 0;
+      const lum = (i) => 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+      for (let y = 1; y < h-1; y++) {
+        for (let x = 1; x < w-1; x++) {
+          const i = (y*w+x)*4;
+          const L = lum(i);
+          const iR = (y*w+x+1)*4, iD = ((y+1)*w+x)*4;
+          if (Math.abs(lum(iR) - L) > 50 || Math.abs(lum(iD) - L) > 50) edges++;
+        }
+      }
+      const edgeDensity = edges / (w * h);
+      let sum = 0, sum2 = 0, n = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const L = lum(i);
+        sum += L; sum2 += L*L; n++;
+      }
+      const mean = sum/n;
+      const rms = Math.sqrt(Math.max(0, sum2/n - mean*mean)) / 255;
+      return 0.6 * edgeDensity + 0.4 * rms;
+    },
+  },
+  ssim: {
+    id: 'ssim',
+    name: 'SSIM vs referencia',
+    needsReference: true,
+    evaluate(src, ref) {
+      if (!ref || ref.width !== src.width || ref.height !== src.height) return -1;
+      const d1 = src.data, d2 = ref.data;
+      const n = d1.length / 4;
+      let mu1 = 0, mu2 = 0;
+      for (let i = 0; i < d1.length; i += 4) {
+        mu1 += 0.299*d1[i] + 0.587*d1[i+1] + 0.114*d1[i+2];
+        mu2 += 0.299*d2[i] + 0.587*d2[i+1] + 0.114*d2[i+2];
+      }
+      mu1 /= n; mu2 /= n;
+      let v1 = 0, v2 = 0, cov = 0;
+      for (let i = 0; i < d1.length; i += 4) {
+        const g1 = 0.299*d1[i] + 0.587*d1[i+1] + 0.114*d1[i+2];
+        const g2 = 0.299*d2[i] + 0.587*d2[i+1] + 0.114*d2[i+2];
+        v1 += (g1 - mu1) ** 2;
+        v2 += (g2 - mu2) ** 2;
+        cov += (g1 - mu1) * (g2 - mu2);
+      }
+      v1 /= n; v2 /= n; cov /= n;
+      const C1 = (0.01*255)**2, C2 = (0.03*255)**2;
+      return ((2*mu1*mu2 + C1) * (2*cov + C2)) / ((mu1*mu1 + mu2*mu2 + C1) * (v1 + v2 + C2));
+    },
+  },
+  mse: {
+    id: 'mse',
+    name: 'MSE vs referencia (inverso)',
+    needsReference: true,
+    evaluate(src, ref) {
+      if (!ref) return -1;
+      let sum = 0, n = 0;
+      for (let i = 0; i < src.data.length; i += 4) {
+        for (let c = 0; c < 3; c++) {
+          const d = src.data[i+c] - ref.data[i+c];
+          sum += d * d; n++;
+        }
+      }
+      return 1 - Math.min(1, Math.sqrt(sum / n) / 255);
+    },
+  },
+};
+
+const Optimizer = {
+  coordinateDescent(objective, initial, bounds, iterations = 4) {
+    const params = { ...initial };
+    let bestScore = objective(params);
+    for (let it = 0; it < iterations; it++) {
+      let improved = false;
+      for (const key in bounds) {
+        const [lo, hi] = bounds[key];
+        const steps = 8;
+        const stepSize = (hi - lo) / steps;
+        let bestVal = params[key], bestLocal = bestScore;
+        for (let s = 0; s <= steps; s++) {
+          const val = lo + s * stepSize;
+          params[key] = val;
+          const score = objective(params);
+          if (score > bestLocal + 1e-9) { bestLocal = score; bestVal = val; }
+        }
+        params[key] = bestVal;
+        if (bestLocal > bestScore + 1e-9) { bestScore = bestLocal; improved = true; }
+      }
+      if (!improved) break;
+    }
+    return { best: params, score: bestScore };
+  },
+  multiStart(objective, bounds, iterations = 4, restarts = 3) {
+    const keys = Object.keys(bounds);
+    const inits = [];
+    const center = {};
+    for (const k of keys) center[k] = (bounds[k][0] + bounds[k][1]) / 2;
+    inits.push(center);
+    for (let r = 1; r < restarts; r++) {
+      const init = {};
+      const combo = r - 1;
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        const bit = (combo >> i) & 1;
+        init[k] = bit ? bounds[k][1] : bounds[k][0];
+      }
+      inits.push(init);
+    }
+    const results = inits.map(init => Optimizer.coordinateDescent(objective, init, bounds, iterations));
+    results.sort((a, b) => b.score - a.score);
+    const best = results[0];
+    const scores = results.map(r => r.score);
+    const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const variance = scores.reduce((a, s) => a + (s - mean) ** 2, 0) / scores.length;
+    return { best: best.best, score: best.score, variance, allResults: results };
+  },
+  sensitivity(objective, bestParams, bounds, samples = 10) {
+    const out = {};
+    for (const key in bounds) {
+      const [lo, hi] = bounds[key];
+      const curve = [];
+      let bestVal = bestParams[key], bestScore = -Infinity;
+      for (let s = 0; s <= samples; s++) {
+        const val = lo + (s / samples) * (hi - lo);
+        const trial = { ...bestParams, [key]: val };
+        const score = objective(trial);
+        curve.push({ val, score });
+        if (score > bestScore) { bestScore = score; bestVal = val; }
+      }
+      const scores = curve.map(c => c.score);
+      const span = Math.max(...scores) - Math.min(...scores);
+      out[key] = { curve, bestVal, bestScore, span };
+    }
+    return out;
+  },
+};
+
+// ============================================================================
+// 3. REGISTROS
+// ============================================================================
+class PathologyRegistry {
+  constructor() { this.items = new Map(); }
+  register(id, spec) {
+    if (!spec.apply || !spec.params) throw new Error(`Pathology ${id}: faltan apply o params`);
+    this.items.set(id, { id, ...spec });
+  }
+  get(id) { return this.items.get(id); }
+  all() { return [...this.items.values()]; }
+}
+class CorrectionRegistry {
+  constructor() { this.items = new Map(); }
+  register(id, spec) {
+    if (!spec.apply || !spec.params) throw new Error(`Correction ${id}: faltan apply o params`);
+    this.items.set(id, { id, ...spec });
+  }
+  get(id) { return this.items.get(id); }
+  all() { return [...this.items.values()]; }
+}
+class MetricRegistry {
+  constructor() { this.items = new Map(); }
+  register(id, spec) {
+    if (!spec.evaluate) throw new Error(`Metric ${id}: falta evaluate`);
+    this.items.set(id, { id, ...spec });
+  }
+  get(id) { return this.items.get(id); }
+  all() { return [...this.items.values()]; }
+}
+
+const pathologies = new PathologyRegistry();
+pathologies.register('cataract', {
+  name: 'Cataratas',
+  params: { severity: { min: 0, max: 1, default: 0.5, label: 'Severidad' } },
+  apply: (src, p) => Filters.yellowTint(Filters.blur(src, 1 + (p.severity ?? 0.5) * 4), p.severity ?? 0.5),
+});
+pathologies.register('glaucoma', {
+  name: 'Glaucoma (túnel)',
+  params: { severity: { min: 0, max: 1, default: 0.5, label: 'Severidad' } },
+  apply: (src, p) => {
+    const s = p.severity ?? 0.5;
+    const maxR = Math.hypot(src.width/2, src.height/2);
+    return Filters.tunnel(src, maxR * (0.75 - 0.55*s), maxR * (1.0 - 0.3*s));
+  },
+});
+pathologies.register('macular', {
+  name: 'Macular seca (escotoma)',
+  params: { severity: { min: 0, max: 1, default: 0.5, label: 'Severidad' } },
+  apply: (src, p) => {
+    const s = p.severity ?? 0.5;
+    return Filters.scotoma(src, src.width/2, src.height/2, Math.min(src.width, src.height) * (0.08 + 0.2*s), 2);
+  },
+});
+pathologies.register('macularWet', {
+  name: 'Macular húmeda (distorsión)',
+  params: { severity: { min: 0, max: 1, default: 0.5, label: 'Severidad' } },
+  apply: (src, p) => Filters.waveDistort(src, (p.severity ?? 0.5) * 10, 0.08),
+});
+pathologies.register('deuteranopia', {
+  name: 'Deuteranopia',
+  params: { severity: { min: 0, max: 1, default: 1.0, label: 'Severidad' } },
+  apply: (src, p) => {
+    const s = p.severity ?? 1.0;
+    const M = [[0.625, 0.375, 0], [0.7, 0.3, 0], [0, 0.3, 0.7]];
+    const I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const mix = (i, j) => I[i][j]*(1-s) + M[i][j]*s;
+    return Filters.colorMatrix(src, [[mix(0,0),mix(0,1),mix(0,2)],[mix(1,0),mix(1,1),mix(1,2)],[mix(2,0),mix(2,1),mix(2,2)]]);
+  },
+});
+
+const corrections = new CorrectionRegistry();
+corrections.register('none', { name: 'Sin corrección', params: {}, apply: (s) => Filters.identity(s) });
+corrections.register('enhance', {
+  name: 'Realce',
+  params: {
+    contrast:   { min: -0.5, max: 1.0, default: 0.2, label: 'Contraste' },
+    brightness: { min: -0.3, max: 0.3, default: 0.0, label: 'Brillo' },
+    saturation: { min: -0.5, max: 1.0, default: 0.1, label: 'Saturación' },
+    blueBoost:  { min:  0.0, max: 1.0, default: 0.0, label: 'Refuerzo azul' },
+  },
+  apply: (src, p) => Filters.enhance(src, {
+    contrast: p.contrast ?? 0, brightness: p.brightness ?? 0,
+    saturation: p.saturation ?? 0, blueBoost: p.blueBoost ?? 0,
+  }),
+});
+corrections.register('sharpen', {
+  name: 'Enfoque (unsharp)',
+  params: {
+    amount: { min: 0.0, max: 2.0, default: 0.5, label: 'Cantidad' },
+    radius: { min: 0.5, max: 3.0, default: 1.0, label: 'Radio' },
+  },
+  apply: (src, p) => Filters.sharpen(src, { amount: p.amount ?? 0.5, radius: p.radius ?? 1 }),
+});
+corrections.register('magnify', {
+  name: 'Magnificación',
+  params: { scale: { min: 1.0, max: 4.0, default: 1.5, label: 'Escala' } },
+  apply: (src, p) => Filters.magnify(src, { scale: p.scale ?? 1.5 }),
+});
+corrections.register('daltonize', {
+  name: 'Daltonización',
+  params: { severity: { min: 0.0, max: 1.0, default: 0.5, label: 'Intensidad' } },
+  apply: (src, p) => Filters.daltonize(src, { severity: p.severity ?? 0.5 }),
+});
+
+const metrics = new MetricRegistry();
+for (const [id, spec] of Object.entries(Metrics)) metrics.register(id, spec);
+
+// ============================================================================
+// 4. ADAPTADORES
+// ============================================================================
+class SyntheticImageSource {
+  constructor(w = 480, h = 360) {
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = w; this.canvas.height = h;
+    this._draw();
+  }
+  _draw() {
+    const g = this.canvas.getContext('2d');
+    const w = this.canvas.width, h = this.canvas.height;
+    const sky = g.createLinearGradient(0, 0, 0, h*0.55);
+    sky.addColorStop(0, '#5B9BD5'); sky.addColorStop(1, '#B8D4E8');
+    g.fillStyle = sky; g.fillRect(0, 0, w, h*0.55);
+    g.fillStyle = '#7CB342'; g.fillRect(0, h*0.55, w, h*0.45);
+    g.fillStyle = '#F5DEB3'; g.fillRect(w*0.12, h*0.42, w*0.24, h*0.28);
+    g.fillStyle = '#A0522D';
+    g.beginPath(); g.moveTo(w*0.10, h*0.42); g.lineTo(w*0.24, h*0.28); g.lineTo(w*0.38, h*0.42);
+    g.closePath(); g.fill();
+    g.fillStyle = '#5D4037'; g.fillRect(w*0.68, h*0.55, w*0.02, h*0.18);
+    g.fillStyle = '#2E7D32';
+    g.beginPath(); g.arc(w*0.69, h*0.5, w*0.06, 0, Math.PI*2); g.fill();
+    g.fillStyle = '#FFCC99';
+    g.beginPath(); g.arc(w*0.5, h*0.5, h*0.08, 0, Math.PI*2); g.fill();
+    g.fillStyle = '#000';
+    g.beginPath(); g.arc(w*0.48, h*0.48, h*0.01, 0, Math.PI*2); g.fill();
+    g.beginPath(); g.arc(w*0.52, h*0.48, h*0.01, 0, Math.PI*2); g.fill();
+    g.strokeStyle = '#000'; g.lineWidth = 2;
+    g.beginPath(); g.arc(w*0.5, h*0.52, h*0.03, 0.2, Math.PI-0.2); g.stroke();
+    g.fillStyle = '#fff'; g.font = `bold ${Math.round(h*0.08)}px sans-serif`;
+    g.fillText('TEXTO', w*0.05, h*0.92);
+    g.font = `${Math.round(h*0.05)}px sans-serif`;
+    g.fillText('abc 123', w*0.4, h*0.92);
+    const colors = ['#FF0000','#00A000','#FF8000','#8000FF','#00FFFF','#808000'];
+    const pw = (w*0.45) / colors.length;
+    colors.forEach((c, i) => {
+      g.fillStyle = c;
+      g.fillRect(w*0.52 + i*pw, h*0.82, pw-2, h*0.1);
+    });
+    g.fillStyle = '#8B4513';
+    g.beginPath(); g.arc(w*0.85, h*0.15, h*0.06, 0, Math.PI*2); g.fill();
+    g.fillStyle = '#7CB342'; g.font = `bold ${Math.round(h*0.05)}px sans-serif`;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('5', w*0.85, h*0.15);
+    g.textAlign = 'start'; g.textBaseline = 'alphabetic';
+  }
+  getFrame() { return this.canvas; }
+  stop() {}
+}
+class CameraImageSource {
+  constructor() { this.video = null; this.stream = null; }
+  async start() {
+    if (this.stream) return;
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('getUserMedia no disponible');
+    this.video = document.createElement('video');
+    this.video.autoplay = true; this.video.playsInline = true; this.video.muted = true;
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false,
+    });
+    this.video.srcObject = this.stream;
+    await this.video.play();
+  }
+  getFrame() {
+    if (!this.video || this.video.videoWidth === 0) return null;
+    return this.video;
+  }
+  stop() {
+    if (this.stream) this.stream.getTracks().forEach(t => t.stop());
+    this.stream = null; this.video = null;
+  }
+}
+class CanvasRenderer {
+  render(canvas, imageData) {
+    const ctx = canvas.getContext('2d');
+    if (canvas.width !== imageData.width || canvas.height !== imageData.height) {
+      canvas.width = imageData.width; canvas.height = imageData.height;
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }
+  clear(canvas) { canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height); }
+}
+class BrowserClock { now() { return performance.now(); } }
+class LocalStoragePersistence {
+  save(key, data) { try { localStorage.setItem('sim_' + key, JSON.stringify(data)); } catch (e) {} }
+  load(key) { try { const r = localStorage.getItem('sim_' + key); return r ? JSON.parse(r) : null; } catch (e) { return null; } }
+}
+
+// ============================================================================
+// 5. APLICACIÓN
+// ============================================================================
+const CaseSchema = {
+  validate(caseJson) {
+    const errors = [];
+    if (!caseJson || typeof caseJson !== 'object') return { valid: false, errors: ['El caso debe ser un objeto'] };
+    if (!caseJson.caseName || typeof caseJson.caseName !== 'string') errors.push('falta "caseName" (string)');
+    if (!caseJson.pathology || typeof caseJson.pathology !== 'object') errors.push('falta "pathology" (objeto)');
+    else if (!pathologies.get(caseJson.pathology.id)) errors.push(`patología desconocida: "${caseJson.pathology.id}"`);
+    if (!Array.isArray(caseJson.corrections) || caseJson.corrections.length === 0) errors.push('"corrections" debe ser array no vacío');
+    else for (const c of caseJson.corrections) if (!corrections.get(c)) errors.push(`corrección desconocida: "${c}"`);
+    if (!caseJson.metric || !metrics.get(caseJson.metric)) errors.push(`métrica desconocida: "${caseJson.metric}"`);
+    if (caseJson.optimization && typeof caseJson.optimization !== 'object') errors.push('"optimization" debe ser objeto');
+    if (caseJson.manual !== undefined && caseJson.manual !== null) {
+      if (typeof caseJson.manual !== 'object' || Array.isArray(caseJson.manual)) errors.push('"manual" debe ser objeto o null');
+    }
+    return { valid: errors.length === 0, errors };
+  },
+};
+
+class CaseRunner {
+  constructor({ pathologies, corrections, metrics }) {
+    this.pathologies = pathologies; this.corrections = corrections; this.metrics = metrics;
+  }
+  run(caseJson, sourceImageData) {
+    const path = this.pathologies.get(caseJson.pathology.id);
+    const sick = path.apply(sourceImageData, caseJson.pathology.params || {});
+    const reference = sourceImageData;
+    const metric = this.metrics.get(caseJson.metric);
+    const fixedByFamily = {};
+    for (const corrId of caseJson.corrections) {
+      const corr = this.corrections.get(corrId);
+      const params = {};
+      for (const [k, spec] of Object.entries(corr.params)) params[k] = spec.default;
+      const fixed = corr.apply(sick, params);
+      fixedByFamily[corrId] = { image: fixed, score: metric.evaluate(fixed, reference), params };
+    }
+    let bestId = null, bestScore = -Infinity;
+    for (const [id, r] of Object.entries(fixedByFamily)) if (r.score > bestScore) { bestScore = r.score; bestId = id; }
+    return { sick, reference, fixedByFamily, bestId, bestScore, baseScore: metric.evaluate(sick, reference), metric: caseJson.metric };
+  }
+  optimize(caseJson, sourceImageData) {
+    const path = this.pathologies.get(caseJson.pathology.id);
+    const sick = path.apply(sourceImageData, caseJson.pathology.params || {});
+    const reference = sourceImageData;
+    const metric = this.metrics.get(caseJson.metric);
+    const baseScore = metric.evaluate(sick, reference);
+    const families = [];
+    for (const corrId of caseJson.corrections) {
+      const corr = this.corrections.get(corrId);
+      if (Object.keys(corr.params).length === 0) {
+        const fixed = corr.apply(sick, {});
+        families.push({ id: corrId, best: {}, score: metric.evaluate(fixed, reference), variance: 0, sensitivity: {}, image: fixed });
+        continue;
+      }
+      const bounds = {};
+      for (const [k, spec] of Object.entries(corr.params)) bounds[k] = [spec.min, spec.max];
+      const objective = (params) => metric.evaluate(corr.apply(sick, params), reference);
+      const restarts = caseJson.optimization?.multiStart || 3;
+      const iterations = caseJson.optimization?.iterations || 4;
+      const ms = Optimizer.multiStart(objective, bounds, iterations, restarts);
+      const sens = caseJson.optimization?.sensitivity ? Optimizer.sensitivity(objective, ms.best, bounds, 10) : null;
+      const fixed = corr.apply(sick, ms.best);
+      families.push({ id: corrId, best: ms.best, score: ms.score, variance: ms.variance, sensitivity: sens, image: fixed });
+    }
+    families.sort((a, b) => b.score - a.score);
+    return { sick, reference, baseScore, families, best: families[0], metric: caseJson.metric };
+  }
+}
+
+// ============================================================================
+// 6. ORQUESTADOR
+// ============================================================================
+class Orchestrator {
+  constructor(rootEl) {
+    this.rootEl = rootEl;
+    this.bus = new EventBus();
+    this.ports = new Map();
+    this.modules = new Map();
+    this.instances = new Map();
+  }
+  registerPort(name, impl) {
+    if (this.ports.has(name)) console.warn(`Port ${name} overwritten`);
+    this.ports.set(name, impl);
+  }
+  registerModule(def) {
+    if (this.modules.has(def.id)) throw new Error(`Module ${def.id} already registered`);
+    this.modules.set(def.id, def);
+  }
+  boot() {
+    const order = this._topoSort();
+    for (const id of order) this._mountModule(id);
+    this._startLoop();
+  }
+  _topoSort() {
+    const providedBy = new Map();
+    for (const [id, mod] of this.modules) for (const portName of (mod.provides || [])) providedBy.set(portName, id);
+    const sorted = [], visited = new Set(), visiting = new Set();
+    const visit = (id) => {
+      if (visited.has(id)) return;
+      if (visiting.has(id)) throw new Error(`Circular dependency at ${id}`);
+      visiting.add(id);
+      const mod = this.modules.get(id);
+      for (const req of (mod.requires || [])) {
+        const providerId = providedBy.get(req);
+        if (providerId && providerId !== id) visit(providerId);
+      }
+      visiting.delete(id); visited.add(id); sorted.push(id);
+    };
+    for (const id of this.modules.keys()) visit(id);
+    return sorted;
+  }
+  _mountModule(id) {
+    const mod = this.modules.get(id);
+    const container = document.createElement('div');
+    container.className = 'module';
+    container.dataset.id = id;
+    this.rootEl.appendChild(container);
+    const ports = {};
+    for (const req of (mod.requires || [])) {
+      if (!this.ports.has(req)) {
+        container.innerHTML = `<p style="color:#f66">Falta el puerto: <code>${req}</code> para <code>${id}</code></p>`;
+        return;
+      }
+      ports[req] = this.ports.get(req);
+    }
+    const ctx = { bus: this.bus, container, ports, self: null };
+    let provided = null;
+    try { provided = mod.mount?.(ctx); }
+    catch (e) { container.innerHTML = `<p style="color:#f66">Error montando ${id}: ${e.message}</p>`; console.error(e); return; }
+    ctx.self = provided || {};
+    if (provided && typeof provided === 'object') for (const [name, impl] of Object.entries(provided)) this.ports.set(name, impl);
+    this.instances.set(id, { ctx, frame: mod.frame, unmount: mod.unmount });
+    this.bus.emit('module:mounted', { id });
+  }
+  _startLoop() {
+    const tick = () => {
+      for (const [, inst] of this.instances) if (inst.frame) try { inst.frame(inst.ctx); } catch (e) { console.error(e); }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+}
+
+// ============================================================================
+// 7. MÓDULOS
+// ============================================================================
+const ModuleRegistry = {
+  mods: new Map(),
+  add(id, def) { this.mods.set(id, { id, ...def }); },
+  all() { return [...this.mods.values()]; },
+};
+
+const DEFAULT_CASE = {
+  version: '1.1',
+  caseName: 'Catarata severa — compara manual vs auto',
+  imageSource: 'synthetic',
+  pathology: { id: 'cataract', params: { severity: 0.7 } },
+  corrections: ['enhance', 'sharpen'],
+  metric: 'ssim',
+  optimization: { iterations: 4, multiStart: 3, sensitivity: true },
+  manual: null,
+};
+
+// ----- case-loader -----
+ModuleRegistry.add('case-loader', {
+  nombre: '📋 Caso (JSON)',
+  requires: ['bus'],
+  provides: ['case'],
+  mount(ctx) {
+    const state = { current: null };
+    const api = {
+      get: () => state.current,
+      set: (c) => {
+        const v = CaseSchema.validate(c);
+        if (!v.valid) { ctx.bus.emit('case:invalid', { errors: v.errors }); return false; }
+        state.current = c;
+        ctx.bus.emit('case:loaded', { case: c });
+        return true;
+      },
+    };
+
+    ctx.container.innerHTML = `
+      <h2>📋 Caso de estudio (JSON)</h2>
+      <div class="desc">
+        El JSON declara la pregunta: patología, correcciones a comparar, métrica.
+        El campo <code>manual</code> es opcional; si está, los sliders empiezan con esos valores.
+      </div>
+      <div class="controls">
+        <button id="btn-default" class="primary">Cargar caso por defecto</button>
+        <button id="btn-validate">Validar JSON</button>
+        <button id="btn-reset">Reiniciar</button>
+      </div>
+      <textarea id="case-json" spellcheck="false"></textarea>
+      <div class="info" id="case-info">Esperando…</div>
+    `;
+
+    const ta = ctx.container.querySelector('#case-json');
+    ta.value = JSON.stringify(DEFAULT_CASE, null, 2);
+    const info = ctx.container.querySelector('#case-info');
+    const updateInfo = (msg, ok) => { info.textContent = msg; info.style.color = ok ? '#66ffa0' : '#ff8888'; };
+
+    ctx.container.querySelector('#btn-default').addEventListener('click', () => {
+      ta.value = JSON.stringify(DEFAULT_CASE, null, 2);
+      const ok = api.set(DEFAULT_CASE);
+      updateInfo(ok ? '✅ Caso por defecto cargado' : '❌ Error', ok);
+    });
+    ctx.container.querySelector('#btn-validate').addEventListener('click', () => {
+      try {
+        const parsed = JSON.parse(ta.value);
+        const v = CaseSchema.validate(parsed);
+        if (v.valid) { updateInfo('✅ JSON válido y cargado', true); api.set(parsed); }
+        else updateInfo('❌ ' + v.errors.join(' | '), false);
+      } catch (e) { updateInfo('❌ JSON inválido: ' + e.message, false); }
+    });
+    ctx.container.querySelector('#btn-reset').addEventListener('click', () => {
+      ta.value = JSON.stringify(DEFAULT_CASE, null, 2);
+      state.current = null;
+      updateInfo('Reiniciado', true);
+    });
+
+    // Sync manual → textarea (no toca el case activo, solo el JSON editable)
+    ctx.bus.on('case:updateManual', ({ manual }) => {
+      try {
+        const current = JSON.parse(ta.value);
+        current.manual = manual;
+        ta.value = JSON.stringify(current, null, 2);
+        updateInfo('📋 Manual sincronizado al textarea JSON', true);
+      } catch (e) {
+        updateInfo('❌ No se pudo sincronizar: ' + e.message, false);
+      }
+    });
+
+    api.set(DEFAULT_CASE);
+    return { case: api };
+  },
+});
+
+// ----- source -----
+ModuleRegistry.add('source', {
+  nombre: '📸 Fuente',
+  requires: ['bus'],
+  provides: ['imageSource'],
+  mount(ctx) {
+    const synthetic = new SyntheticImageSource();
+    const camera = new CameraImageSource();
+    const state = { type: 'synthetic' };
+    const api = {
+      getFrame() {
+        if (state.type === 'camera') { const f = camera.getFrame(); return f || synthetic.getFrame(); }
+        return synthetic.getFrame();
+      },
+      getType: () => state.type,
+    };
+    ctx.container.innerHTML = `
+      <h2>📸 Fuente de imagen</h2>
+      <div class="desc">Escena sintética o cámara. La sintética es fallback si la cámara falla.</div>
+      <div class="controls">
+        <button data-src="synthetic" class="active">Escena sintética</button>
+        <button data-src="camera">Cámara</button>
+      </div>
+      <div class="info" id="src-info">Fuente: sintética</div>
+      <canvas id="src-preview" width="360" height="270"></canvas>
+    `;
+    const info = ctx.container.querySelector('#src-info');
+    const btns = ctx.container.querySelectorAll('[data-src]');
+    btns.forEach(btn => btn.addEventListener('click', async () => {
+      btns.forEach(b => b.classList.toggle('active', b === btn));
+      if (btn.dataset.src === 'camera') {
+        try { await camera.start(); state.type = 'camera'; info.textContent = 'Fuente: cámara'; }
+        catch (e) { info.textContent = '❌ Cámara: ' + e.message + ' — fallback'; state.type = 'synthetic'; }
+      } else { camera.stop(); state.type = 'synthetic'; info.textContent = 'Fuente: sintética'; }
+    }));
+    return { imageSource: api };
+  },
+  frame(ctx) {
+    const api = ctx.self?.imageSource;
+    if (!api) return;
+    const src = api.getFrame();
+    if (!src) return;
+    const cv = ctx.container.querySelector('#src-preview');
+    if (!cv) return;
+    cv.getContext('2d').drawImage(src, 0, 0, cv.width, cv.height);
+  },
+});
+
+// ----- manual-controls (NUEVO) -----
+ModuleRegistry.add('manual-controls', {
+  nombre: '🎚️ Control manual',
+  requires: ['bus', 'case'],
+  provides: ['manualParams'],
+  mount(ctx) {
+    // state.params: { [correctionId]: { [paramName]: value } }
+    const state = { params: {} };
+    const domRefs = {}; // { [correctionId]: { [paramName]: { input, span } } }
+
+    const api = {
+      get(correctionId) {
+        // Devuelve copia. Si no existe la entrada, devuelve defaults del registro.
+        if (state.params[correctionId]) return { ...state.params[correctionId] };
+        const corr = corrections.get(correctionId);
+        if (!corr) return {};
+        const defaults = {};
+        for (const [k, spec] of Object.entries(corr.params)) defaults[k] = spec.default;
+        return defaults;
+      },
+      getAll() {
+        const all = {};
+        for (const id of Object.keys(state.params)) all[id] = { ...state.params[id] };
+        return all;
+      },
+    };
+
+    // Inicializa state desde case + registry
+    const initState = () => {
+      const c = ctx.ports.case.get();
+      if (!c) return;
+      state.params = {};
+      domRefs.clear;
+      for (const corrId of c.corrections) {
+        const corr = corrections.get(corrId);
+        if (!corr) continue;
+        const fromCase = c.manual?.[corrId] || {};
+        const init = {};
+        for (const [k, spec] of Object.entries(corr.params)) {
+          const v = fromCase[k];
+          init[k] = (typeof v === 'number' && v >= spec.min && v <= spec.max) ? v : spec.default;
+        }
+        state.params[corrId] = init;
+      }
+    };
+
+    // Regenera UI a partir de state
+    const regenerateUI = () => {
+      const c = ctx.ports.case.get();
+      if (!c) return;
+      for (const k in domRefs) delete domRefs[k];
+      const sectionRoot = ctx.container.querySelector('#sections');
+      sectionRoot.innerHTML = '';
+
+      for (const corrId of c.corrections) {
+        const corr = corrections.get(corrId);
+        if (!corr) continue;
+        const params = state.params[corrId] || {};
+
+        const sec = document.createElement('div');
+        sec.className = 'corr-section';
+        const paramKeys = Object.keys(corr.params);
+        let html = `<h3><span>${corr.name} <code style="font-size:0.7rem;opacity:0.7;">(${corrId})</code></span>`;
+        if (paramKeys.length > 0) html += `<button class="tiny" data-reset="${corrId}">↺ reset</button>`;
+        html += `</h3>`;
+        if (paramKeys.length === 0) html += `<div class="info">Sin parámetros ajustables.</div>`;
+
+        for (const k of paramKeys) {
+          const spec = corr.params[k];
+          const v = params[k] ?? spec.default;
+          html += `
+            <div class="param-row" data-param="${corrId}:${k}">
+              <label>${spec.label}</label>
+              <input type="range" min="${spec.min}" max="${spec.max}" step="0.01" value="${v}">
+              <span>${Number(v).toFixed(2)}</span>
+            </div>
+          `;
+        }
+        sec.innerHTML = html;
+        sectionRoot.appendChild(sec);
+
+        // Wire sliders
+        domRefs[corrId] = {};
+        for (const k of paramKeys) {
+          const row = sec.querySelector(`[data-param="${corrId}:${k}"]`);
+          const input = row.querySelector('input');
+          const span = row.querySelector('span');
+          domRefs[corrId][k] = { input, span };
+          input.addEventListener('input', () => {
+            const v = parseFloat(input.value);
+            state.params[corrId][k] = v;
+            span.textContent = v.toFixed(2);
+            ctx.bus.emit('manual:updated', { correctionId: corrId, params: { ...state.params[corrId] } });
+          });
+        }
+
+        // Reset button
+        const resetBtn = sec.querySelector(`[data-reset="${corrId}"]`);
+        if (resetBtn) resetBtn.addEventListener('click', () => {
+          for (const k of paramKeys) {
+            const spec = corr.params[k];
+            state.params[corrId][k] = spec.default;
+            const refs = domRefs[corrId][k];
+            refs.input.value = spec.default;
+            refs.span.textContent = Number(spec.default).toFixed(2);
+          }
+          ctx.bus.emit('manual:updated', { correctionId: corrId, params: { ...state.params[corrId] } });
+        });
+      }
+    };
+
+    ctx.container.innerHTML = `
+      <h2>🎚️ Control manual</h2>
+      <div class="desc">
+        Ajusta los parámetros a mano y mira el score en vivo en el panel de resultados.
+        Cuando tengas una combinación que te guste, pulsa <strong>Sync manual → JSON</strong>
+        para volcarla al textarea del caso.
+      </div>
+      <div class="controls">
+        <button id="btn-sync" class="primary">📋 Sync manual → JSON</button>
+        <button id="btn-reset-all">↺ Reiniciar a defaults</button>
+      </div>
+      <div id="sections"></div>
+    `;
+
+    ctx.container.querySelector('#btn-sync').addEventListener('click', () => {
+      ctx.bus.emit('case:updateManual', { manual: api.getAll() });
+    });
+    ctx.container.querySelector('#btn-reset-all').addEventListener('click', () => {
+      const c = ctx.ports.case.get();
+      if (!c) return;
+      for (const corrId of c.corrections) {
+        const corr = corrections.get(corrId);
+        if (!corr) continue;
+        state.params[corrId] = {};
+        for (const [k, spec] of Object.entries(corr.params)) state.params[corrId][k] = spec.default;
+      }
+      regenerateUI();
+      for (const corrId of c.corrections) {
+        ctx.bus.emit('manual:updated', { correctionId: corrId, params: { ...state.params[corrId] } });
+      }
+    });
+
+    // Reacciona a:
+    //  - case:loaded → regenera (inicializa desde case.manual o defaults)
+    //  - optimization:applyToManual → vuelca params en sliders y emite manual:updated
+    ctx.bus.on('case:loaded', () => {
+      initState();
+      regenerateUI();
+      for (const corrId of Object.keys(state.params)) {
+        ctx.bus.emit('manual:updated', { correctionId: corrId, params: { ...state.params[corrId] } });
+      }
+    });
+
+    ctx.bus.on('optimization:applyToManual', ({ correctionId, params }) => {
+      if (!state.params[correctionId]) return;
+      state.params[correctionId] = { ...state.params[correctionId], ...params };
+      const refs = domRefs[correctionId];
+      if (refs) {
+        for (const [k, v] of Object.entries(params)) {
+          if (refs[k]) {
+            refs[k].input.value = v;
+            refs[k].span.textContent = Number(v).toFixed(2);
+          }
+        }
+      }
+      ctx.bus.emit('manual:updated', { correctionId, params: { ...state.params[correctionId] } });
+    });
+
+    return { manualParams: api };
+  },
+});
+
+// ----- preview -----
+ModuleRegistry.add('preview', {
+  nombre: '🖼 Vista previa',
+  requires: ['bus', 'case', 'imageSource', 'manualParams'],
+  mount(ctx) {
+    ctx.container.innerHTML = `
+      <h2>🖼 Original · patología · corrección manual</h2>
+      <div class="desc">
+        La corrección se aplica con los parámetros manuales actuales (sliders).
+        Cambia un slider y esto se repinta.
+      </div>
+      <div class="grid-3">
+        <div><canvas id="cv-orig" width="300" height="225"></canvas><div class="canvas-label">Original (sano)</div></div>
+        <div><canvas id="cv-sick" width="300" height="225"></canvas><div class="canvas-label">Patología</div></div>
+        <div><canvas id="cv-fixed" width="300" height="225"></canvas><div class="canvas-label" id="fixed-label">Corrección</div></div>
+      </div>
+      <div class="info" id="prev-info">—</div>
+    `;
+    const info = ctx.container.querySelector('#prev-info');
+    const fixedLabel = ctx.container.querySelector('#fixed-label');
+    const cvs = {
+      orig: ctx.container.querySelector('#cv-orig'),
+      sick: ctx.container.querySelector('#cv-sick'),
+      fixed: ctx.container.querySelector('#cv-fixed'),
+    };
+    const renderer = new CanvasRenderer();
+    let lastKey = '';
+    let forceRender = false;
+
+    ctx.bus.on('case:loaded', () => { lastKey = ''; forceRender = true; });
+    ctx.bus.on('manual:updated', () => { forceRender = true; });
+
+    const tick = () => {
+      const c = ctx.ports.case.get();
+      if (!c) return;
+      const src = ctx.ports.imageSource.getFrame();
+      if (!src) return;
+      const tmp = document.createElement('canvas');
+      tmp.width = 240; tmp.height = 180;
+      tmp.getContext('2d').drawImage(src, 0, 0, tmp.width, tmp.height);
+      const srcData = tmp.getContext('2d').getImageData(0, 0, tmp.width, tmp.height);
+
+      const firstCorr = c.corrections[0];
+      const manualParams = ctx.ports.manualParams.get(firstCorr);
+      const key = c.caseName + '|' + c.pathology.id + '|' + JSON.stringify(c.pathology.params) +
+                  '|' + firstCorr + '|' + JSON.stringify(manualParams);
+      if (key === lastKey && !forceRender) return;
+      lastKey = key; forceRender = false;
+
+      try {
+        const path = pathologies.get(c.pathology.id);
+        const sick = path.apply(srcData, c.pathology.params || {});
+        const corr = corrections.get(firstCorr);
+        const fixed = corr.apply(sick, manualParams);
+
+        renderer.render(cvs.orig, srcData);
+        renderer.render(cvs.sick, sick);
+        renderer.render(cvs.fixed, fixed);
+
+        const metric = metrics.get(c.metric);
+        const base = metric.evaluate(sick, srcData);
+        const after = metric.evaluate(fixed, srcData);
+        fixedLabel.textContent = `Corrección (${corr.name}, manual)`;
+        info.textContent = `Métrica ${c.metric}: patología=${base.toFixed(3)} → manual(${corr.name})=${after.toFixed(3)} (Δ=${(after-base).toFixed(3)})`;
+      } catch (e) {
+        info.textContent = '❌ ' + e.message;
+      }
+    };
+    setInterval(tick, 300);
+    tick();
+  },
+});
+
+// ----- optimizer -----
+ModuleRegistry.add('optimizer', {
+  nombre: '🎯 Optimizador',
+  requires: ['bus', 'case', 'imageSource'],
+  provides: ['optimizer'],
+  mount(ctx) {
+    const state = { lastResult: null };
+    const api = { getLastResult: () => state.lastResult };
+    ctx.container.innerHTML = `
+      <h2>🎯 Optimizador</h2>
+      <div class="desc">
+        Para cada familia, optimiza parámetros por descenso de coordenadas con multi-start.
+        Reporta ranking, varianza y sensibilidad. Cuando tengas resultados, en la tabla
+        puedes pulsar <strong>→ manual</strong> para volcar esos parámetros a los sliders.
+      </div>
+      <div class="controls">
+        <button id="btn-opt" class="primary">🚀 Optimizar caso actual</button>
+      </div>
+      <div class="info" id="opt-info">—</div>
+    `;
+    const info = ctx.container.querySelector('#opt-info');
+
+    ctx.container.querySelector('#btn-opt').addEventListener('click', () => {
+      const c = ctx.ports.case.get();
+      if (!c) { info.textContent = '❌ Carga un caso válido primero.'; return; }
+      const src = ctx.ports.imageSource.getFrame();
+      if (!src) { info.textContent = '❌ Fuente no lista.'; return; }
+      info.textContent = '⏳ Optimizando…';
+      ctx.bus.emit('optimization:started', {});
+
+      setTimeout(() => {
+        try {
+          const tmp = document.createElement('canvas');
+          tmp.width = 200; tmp.height = 150;
+          tmp.getContext('2d').drawImage(src, 0, 0, tmp.width, tmp.height);
+          const srcData = tmp.getContext('2d').getImageData(0, 0, tmp.width, tmp.height);
+          const runner = new CaseRunner({ pathologies, corrections, metrics });
+          const t0 = performance.now();
+          const result = runner.optimize(c, srcData);
+          const elapsed = performance.now() - t0;
+          state.lastResult = result;
+          ctx.bus.emit('optimization:finished', { result, elapsed });
+          info.innerHTML = `✅ ${elapsed.toFixed(0)}ms · base=${result.baseScore.toFixed(3)} · mejor=${result.best.id} con ${result.best.score.toFixed(3)}`;
+        } catch (e) {
+          info.textContent = '❌ ' + e.message;
+          console.error(e);
+        }
+      }, 20);
+    });
+
+    return { optimizer: api };
+  },
+});
+
+// ----- results (con columnas Manual vs Auto) -----
+ModuleRegistry.add('results', {
+  nombre: '📊 Resultados',
+  requires: ['bus', 'optimizer', 'manualParams'],
+  mount(ctx) {
+    ctx.container.innerHTML = `
+      <h2>📊 Resultados — Auto vs Manual</h2>
+      <div class="desc">
+        <strong>Auto</strong>: mejor score encontrado por el optimizador.
+        <strong>Manual</strong>: score con los parámetros actuales de los sliders.
+        Si <strong>Manual &gt; Auto</strong>, has afinado mejor que la búsqueda.
+        Botón <strong>→ manual</strong> vuelca el óptimo a los sliders para seguir jugando.
+      </div>
+      <div id="results-body"><div class="info">Pulsa "Optimizar" para ver el ranking.</div></div>
+    `;
+    const body = ctx.container.querySelector('#results-body');
+    let lastResult = null;
+
+    const render = () => {
+      if (!lastResult) return;
+      const result = lastResult;
+      const metric = metrics.get(result.metric);
+      const manualAll = ctx.ports.manualParams.getAll();
+
+      let html = `<div class="info">Métrica: <strong>${metric.name}</strong> · base (patología): ${result.baseScore.toFixed(4)}</div>`;
+      html += `<table class="results-table"><thead><tr>
+        <th>Familia</th><th>Auto</th><th>Manual</th><th>Δ (man−auto)</th><th>Varianza</th><th>Params auto</th><th></th>
+      </tr></thead><tbody>`;
+
+      for (const f of result.families) {
+        const manualParams = manualAll[f.id];
+        const hasManual = manualParams && Object.keys(manualParams).length > 0;
+        // Score manual: aplicar params manuales actuales a la patología
+        let manualScore = null;
+        if (hasManual) {
+          try {
+            const manualImg = corrections.get(f.id).apply(result.sick, manualParams);
+            manualScore = metric.evaluate(manualImg, result.reference);
+          } catch (e) { manualScore = null; }
+        }
+        const delta = manualScore != null ? manualScore - f.score : null;
+        const deltaColor = delta == null ? '#8899bb' : delta > 1e-6 ? '#66ffa0' : delta < -1e-6 ? '#ff8888' : '#8899bb';
+        const isBest = f.id === result.best.id;
+        const varColor = f.variance < 1e-4 ? '#66ffa0' : f.variance < 1e-2 ? '#ffcc00' : '#ff8888';
+        const paramsStr = Object.entries(f.best).map(([k, v]) => `${k}=${typeof v === 'number' ? v.toFixed(2) : v}`).join(', ') || '—';
+        const manualStr = manualScore == null ? '(sin manual)' : manualScore.toFixed(4);
+        const deltaStr = delta == null ? '—' : (delta >= 0 ? '+' : '') + delta.toFixed(4);
+
+        html += `<tr>
+          <td>${isBest ? '⭐ ' : ''}${corrections.get(f.id).name}</td>
+          <td>${f.score.toFixed(4)}</td>
+          <td style="color:${manualScore != null ? '#aaccff' : '#556'}">${manualStr}</td>
+          <td style="color:${deltaColor}">${deltaStr}</td>
+          <td style="color:${varColor}">${f.variance.toExponential(2)}</td>
+          <td>${paramsStr}</td>
+          <td>${Object.keys(corrections.get(f.id).params).length > 0 ? `<button class="tiny" data-apply="${f.id}">→ manual</button>` : ''}</td>
+        </tr>`;
+      }
+      html += `</tbody></table>`;
+
+      // Sensibilidad del mejor
+      const best = result.families.find(f => f.id === result.best.id);
+      if (best && best.sensitivity) {
+        html += `<h3 style="color:#aaccff;font-size:0.9rem;margin-top:12px;">Sensibilidad de ${corrections.get(best.id).name}</h3>`;
+        let maxSpan = 0;
+        for (const k in best.sensitivity) maxSpan = Math.max(maxSpan, best.sensitivity[k].span);
+        html += `<table class="results-table"><thead><tr><th>Parámetro</th><th>Óptimo</th><th>Importancia</th></tr></thead><tbody>`;
+        for (const k in best.sensitivity) {
+          const s = best.sensitivity[k];
+          const pct = maxSpan > 0 ? (s.span / maxSpan) * 100 : 0;
+          html += `<tr>
+            <td>${k}</td>
+            <td>${s.bestVal.toFixed(3)}</td>
+            <td><span class="bar ${pct > 80 ? 'best' : ''}" style="width:${pct.toFixed(0)}%; min-width:4px;"></span> ${s.span.toFixed(4)}</td>
+          </tr>`;
+        }
+        html += `</tbody></table>`;
+      }
+
+      body.innerHTML = html;
+
+      // Wire "→ manual" buttons
+      body.querySelectorAll('[data-apply]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const id = btn.dataset.apply;
+          const fam = result.families.find(f => f.id === id);
+          if (!fam) return;
+          ctx.bus.emit('optimization:applyToManual', { correctionId: id, params: fam.best });
+        });
+      });
+    };
+
+    ctx.bus.on('optimization:finished', ({ result }) => {
+      lastResult = result;
+      render();
+    });
+    ctx.bus.on('manual:updated', () => { render(); });
+    ctx.bus.on('case:loaded', () => { lastResult = null; body.innerHTML = `<div class="info">Caso cargado. Pulsa "Optimizar".</div>`; });
+  },
+});
+
+// ----- trainer -----
+ModuleRegistry.add('trainer', {
+  nombre: '📋 Sesiones',
+  requires: ['bus'],
+  mount(ctx) {
+    const sessions = [];
+    let current = null;
+    ctx.container.innerHTML = `
+      <h2>📋 Registro de sesiones</h2>
+      <div class="desc">Log determinista. Exportable a JSON. Sin pretensión clínica.</div>
+      <div class="controls">
+        <button id="btn-start">Iniciar sesión</button>
+        <button id="btn-export">Exportar JSON</button>
+      </div>
+      <div class="info" id="tr-info">Sesiones: 0</div>
+    `;
+    const info = ctx.container.querySelector('#tr-info');
+    ctx.container.querySelector('#btn-start').addEventListener('click', () => {
+      current = { startMs: performance.now(), events: [] };
+      sessions.push(current);
+      info.textContent = `Sesión ${sessions.length} iniciada · eventos: 0`;
+    });
+    ctx.container.querySelector('#btn-export').addEventListener('click', () => {
+      if (current) { current.endMs = performance.now(); current.durationMs = current.endMs - current.startMs; }
+      const blob = new Blob([JSON.stringify(sessions, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = 'sesiones.json'; a.click();
+    });
+    ctx.bus.on('case:loaded', ({ case: c }) => { if (current) current.events.push({ t: performance.now() - current.startMs, kind: 'case', caseName: c.caseName }); });
+    ctx.bus.on('optimization:finished', ({ result }) => {
+      if (current) current.events.push({
+        t: performance.now() - current.startMs, kind: 'optimization',
+        baseScore: result.baseScore, best: result.best.id, bestScore: result.best.score, params: result.best.best,
+      });
+      info.textContent = `Sesión ${sessions.length} · eventos: ${current?.events.length || 0}`;
+    });
+    ctx.bus.on('manual:updated', ({ correctionId }) => {
+      if (current) current.events.push({ t: performance.now() - current.startMs, kind: 'manual', correctionId });
+    });
+  },
+});
+
+// ============================================================================
+// 8. TESTS
+// ============================================================================
+function makeTestImage(w, h, fill) {
+  const d = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const c = fill(x, y);
+    const i = (y*w+x)*4;
+    d[i] = c[0]; d[i+1] = c[1]; d[i+2] = c[2]; d[i+3] = 255;
+  }
+  return new ImageData(d, w, h);
+}
+
+function runTests() {
+  const results = [];
+  const t = (name, fn) => { try { fn(); results.push({ name, ok: true }); } catch (e) { results.push({ name, ok: false, error: e.message }); } };
+  const assert = (c, m) => { if (!c) throw new Error(m); };
+
+  t('EventBus: on/emit/off', () => {
+    const b = new EventBus(); let n = 0; const cb = () => n++;
+    b.on('x', cb); b.emit('x'); b.off('x', cb); b.emit('x');
+    assert(n === 1, `n=${n}`);
+  });
+  t('Filters.identity: no modifica', () => {
+    const src = makeTestImage(4, 4, () => [10, 20, 30]);
+    assert(Filters.identity(src).data[0] === 10, 'cambió');
+  });
+  t('Filters.blur: uniforme', () => {
+    const src = makeTestImage(9, 9, () => [100, 100, 100]);
+    assert(Math.abs(Filters.blur(src, 2).data[0] - 100) < 3, 'cambió');
+  });
+  t('Filters.scotoma: centro oscuro', () => {
+    const src = makeTestImage(40, 40, () => [200, 200, 200]);
+    const ci = (20*40 + 20) * 4;
+    assert(Filters.scotoma(src, 20, 20, 8, 1).data[ci] < 10, 'no oscureció');
+  });
+  t('Filters.enhance: separa extremos', () => {
+    const src = makeTestImage(2, 2, (x) => x ? [220, 220, 220] : [40, 40, 40]);
+    const out = Filters.enhance(src, { contrast: 0.5 });
+    assert((out.data[4] - out.data[0]) > (src.data[4] - src.data[0]), 'no separó');
+  });
+  t('Metrics.proxyLegibility: rejilla > uniforme', () => {
+    const grid = makeTestImage(30, 30, (x) => x % 2 ? [0,0,0] : [255,255,255]);
+    const uniform = makeTestImage(30, 30, () => [128,128,128]);
+    assert(Metrics.proxyLegibility.evaluate(grid) > Metrics.proxyLegibility.evaluate(uniform), 'no');
+  });
+  t('Metrics.ssim: idénticas = 1', () => {
+    const a = makeTestImage(20, 20, (x, y) => [x*10, y*10, 100]);
+    assert(Math.abs(Metrics.ssim.evaluate(a, a) - 1) < 1e-6, 'no');
+  });
+  t('Optimizer.coordinateDescent: converge', () => {
+    const obj = (p) => -((p.x - 3)**2) - ((p.y - 7)**2) + 100;
+    const r = Optimizer.coordinateDescent(obj, { x: 0, y: 0 }, { x: [0, 10], y: [0, 10] }, 4);
+    assert(Math.abs(r.best.x - 3) < 1.5 && Math.abs(r.best.y - 7) < 1.5, 'no converge');
+  });
+  t('Optimizer.multiStart: varianza numérica', () => {
+    const r = Optimizer.multiStart((p) => -(p.x ** 2), { x: [-5, 5] }, 3, 3);
+    assert(typeof r.variance === 'number', 'no');
+  });
+  t('PathologyRegistry: registra y recupera', () => {
+    const r = new PathologyRegistry();
+    r.register('test', { name: 'T', params: {}, apply: (s) => s });
+    assert(r.get('test').name === 'T', 'no');
+  });
+  t('CaseSchema: rechaza patología desconocida', () => {
+    const v = CaseSchema.validate({ caseName: 'x', pathology: { id: 'nope' }, corrections: ['enhance'], metric: 'ssim' });
+    assert(!v.valid, 'no rechazó');
+  });
+  t('CaseSchema: acepta caso válido', () => {
+    const v = CaseSchema.validate({ caseName: 'x', pathology: { id: 'cataract' }, corrections: ['enhance'], metric: 'ssim' });
+    assert(v.valid, 'rechazó');
+  });
+  t('CaseSchema: acepta manual objeto', () => {
+    const v = CaseSchema.validate({ caseName: 'x', pathology: { id: 'cataract' }, corrections: ['enhance'], metric: 'ssim', manual: { enhance: { contrast: 0.3 } } });
+    assert(v.valid, 'rechazó manual');
+  });
+  t('CaseSchema: rechaza manual no-objeto', () => {
+    const v = CaseSchema.validate({ caseName: 'x', pathology: { id: 'cataract' }, corrections: ['enhance'], metric: 'ssim', manual: 'nope' });
+    assert(!v.valid, 'aceptó manual inválido');
+  });
+  t('CaseRunner.optimize: familia y params', () => {
+    const runner = new CaseRunner({ pathologies, corrections, metrics });
+    const src = makeTestImage(80, 80, () => [180, 120, 80]);
+    const c = { caseName: 't', pathology: { id: 'cataract', params: { severity: 0.7 } }, corrections: ['enhance', 'sharpen'], metric: 'ssim', optimization: { iterations: 3, multiStart: 2, sensitivity: false } };
+    const r = runner.optimize(c, src);
+    assert(r.families.length === 2, 'familias mal');
+    assert(r.best.score >= r.baseScore - 1e-6, 'no mejora');
+  });
+  t('Orquestador: provides debe ser array', () => {
+    for (const [id, mod] of ModuleRegistry.mods) {
+      if (!mod.provides) continue;
+      assert(Array.isArray(mod.provides), `${id}: provides no es array`);
+      for (const p of mod.provides) assert(typeof p === 'string', `${id}: port no-string`);
+    }
+  });
+  t('manualParams port esperado por preview y results', () => {
+    const mc = ModuleRegistry.mods.get('manual-controls');
+    assert(mc.provides.includes('manualParams'), 'manual-controls no provee manualParams');
+    const preview = ModuleRegistry.mods.get('preview');
+    assert(preview.requires.includes('manualParams'), 'preview no requiere manualParams');
+    const results = ModuleRegistry.mods.get('results');
+    assert(results.requires.includes('manualParams'), 'results no requiere manualParams');
+  });
+
+  const ok = results.filter(r => r.ok).length;
+  const el = document.getElementById('test-results');
+  if (el) {
+    el.innerHTML = `<h3 style="color:#aaccff;font-size:0.9rem;margin-bottom:8px;">🧪 Tests: ${ok}/${results.length} OK</h3>` +
+      results.map(r => `<div class="${r.ok ? 'ok' : 'fail'}">${r.ok ? '✅' : '❌'} ${r.name}${r.ok ? '' : ' — ' + r.error}</div>`).join('');
+  }
+  console.log(`Tests: ${ok}/${results.length} OK`);
+  return { ok, fail: results.length - ok };
+}
+
+// ============================================================================
+// 9. BOOT
+// ============================================================================
+window.addEventListener('load', () => {
+  runTests();
+  const orch = new Orchestrator(document.getElementById('root'));
+  orch.registerPort('bus', orch.bus);
+  orch.registerPort('clock', new BrowserClock());
+  orch.registerPort('persistence', new LocalStoragePersistence());
+  orch.registerPort('renderer', new CanvasRenderer());
+  for (const m of ModuleRegistry.all()) orch.registerModule(m);
+  try { orch.boot(); }
+  catch (e) { document.getElementById('root').innerHTML = `<p style="color:#f66">Error de arranque: ${e.message}</p>`; console.error(e); }
+  window.sim = { orch, pathologies, corrections, metrics, Filters, Metrics, Optimizer, CaseRunner };
+});
+</script>
+</body>
+</html>
