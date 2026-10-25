@@ -1,0 +1,407 @@
+============================================================
+SIMULADOR DE PATOLOGÍAS VISUALES
+Archivo: simulador_mecanica_ocular.html
+Versión: 1.1
+Licencia sugerida: AGPLv3 (software) — CERN OHL v2 si se porta a hardware
+============================================================
+
+------------------------------------------------------------
+1. QUÉ ES
+------------------------------------------------------------
+
+Un juguete educativo y banco de pruebas conceptual. NO es un
+simulador clínico, NO es una herramienta de diagnóstico, NO
+sustituye una validación con pacientes.
+
+Aplica filtros deterministas a imágenes para simular el EFECTO
+FUNCIONAL de ciertas patologías visuales, y permite comparar
+familias de corrección (realce, enfoque, magnificación,
+daltonización) mediante métricas de píxeles.
+
+Simula efectos, no causas. No simula el ojo, ni la retina, ni
+el nervio óptico, ni el cerebro. Simula "cómo se ve una imagen
+si le aplicas esta transformación determinista".
+
+Uso previsto:
+  - Generar hipótesis sobre qué tipo de corrección podría ayudar
+    a qué tipo de patología.
+  - Descartar malas ideas rápido, antes de invertir en prototipos.
+  - Entender la diferencia entre "redirigir información" y
+    "generar información" (el simulador solo hace lo primero).
+  - Explorar arquitecturas de software (hexagonal, eventos,
+    puertos/adaptadores) aplicadas a un dominio real.
+
+Uso NO previsto:
+  - Diagnosticar a nadie.
+  - Decidir qué gafas o lentilla recetar.
+  - Sustituir un ensayo clínico.
+  - Pretender que "el score sube" equivale a "el paciente ve
+    mejor". No es equivalente.
+
+
+------------------------------------------------------------
+2. QUÉ HACE
+------------------------------------------------------------
+
+2.1 Simulación de patologías
+
+Cinco patologías registradas, cada una con parámetros ajustables:
+
+  - cataract       (cataratas)
+      Aplica desenfoque + tinte amarillento. Severidad 0..1.
+
+  - glaucoma       (glaucoma avanzado)
+      Aplica una máscara radial (visión en túnel). Severidad 0..1.
+
+  - macular        (degeneración macular seca)
+      Aplica un escotoma central (zona oscura en el centro).
+      Severidad 0..1.
+
+  - macularWet     (degeneración macular húmeda)
+      Aplica una distorsión ondulatoria radial. Severidad 0..1.
+
+  - deuteranopia   (daltonismo rojo-verde)
+      Aplica una matriz de color 3x3 que simula la pérdida del
+      eje rojo-verde. Severidad 0..1.
+
+2.2 Correcciones
+
+Cuatro familias registradas, cada una con parámetros ajustables:
+
+  - none           (sin corrección, control)
+
+  - enhance        (realce)
+      Contraste, brillo, saturación, refuerzo de azul.
+      Pensada para cataratas (compensar el tinte amarillo).
+
+  - sharpen        (enfoque unsharp mask)
+      Cantidad y radio. Pensada para desenfoques direccionales.
+
+  - magnify        (magnificación central)
+      Escala. Pensada para escotomas (agrandar el centro hasta
+      que el contenido útil "salga" del escotoma).
+
+  - daltonize      (daltonización)
+      Intensidad. Mueve el error del eje rojo-verde al eje
+      azul-amarillo, que el deuteranope sí ve.
+
+2.3 Métricas
+
+Tres métricas registradas. El usuario elige en el JSON del caso:
+
+  - proxyLegibility   (proxy de legibilidad)
+      Combina densidad de bordes (60%) y contraste RMS (40%).
+      NO requiere referencia. Es un proxy, no una tarea. Su
+      nombre lo dice: "proxy".
+
+  - ssim              (SSIM contra referencia)
+      Similitud estructural con la imagen original "sana".
+      Requiere referencia. Es más honesta que el proxy porque
+      está anclada a algo concreto: "¿se parece a lo que vería
+      un ojo sano?". Pero sigue siendo un proxy de "ver bien".
+
+  - mse               (error cuadrático medio, invertido)
+      Diferencia de píxeles con la referencia. Requiere
+      referencia. Se ofrece como alternativa descriptiva.
+
+2.4 Modo manual
+
+Panel de sliders generado automáticamente desde el schema de
+cada corrección. Al mover un slider:
+  - Se actualiza el estado de parámetros.
+  - Se re-renderiza el preview (original | patología | corregido).
+  - Se recalcula el score "manual" en la tabla de resultados.
+  - Se emite un evento "manual:updated" que otros módulos pueden
+    escuchar.
+
+2.5 Modo optimizador
+
+Búsqueda automática de parámetros para cada familia listada en
+el caso:
+  - Descenso de coordenadas sobre una rejilla, por parámetro.
+  - Multi-start (3 reinicios deterministas: centro + esquinas).
+  - Reporta el mejor score por familia, la varianza entre
+    reinicios (estabilidad) y la sensibilidad de cada parámetro
+    (qué parámetro importa más).
+
+Cuando termina:
+  - Ranking de familias con Auto (score óptimo) y Manual (score
+    con los sliders actuales).
+  - Botón "→ manual" por familia: vuelca el óptimo a los
+    sliders para seguir afinando a ojo desde ahí.
+
+2.6 Comparación Auto vs Manual
+
+La tabla de resultados muestra ambas columnas y el delta:
+  - Δ (man − auto) positivo (verde): el ajuste manual supera al
+    óptimo automático. Has afinado mejor que la búsqueda.
+  - Δ negativo (rojo): el óptimo es mejor.
+  - Δ cero (gris): coinciden.
+
+Esto permite cotejar el juicio humano contra la búsqueda
+automática, y usar el óptimo como punto de partida.
+
+2.7 Casos en JSON
+
+Un caso declara la pregunta:
+  {
+    "caseName": "...",
+    "pathology": { "id": "...", "params": {...} },
+    "corrections": ["...", "..."],
+    "metric": "...",
+    "optimization": { "iterations": N, "multiStart": M,
+                      "sensitivity": true },
+    "manual": { ... }   // opcional
+  }
+
+El campo "manual" permite arrancar los sliders con valores
+concretos. El botón "Sync manual → JSON" vuelca el estado actual
+de los sliders al textarea del JSON para persistirlo.
+
+Validación estricta: si la patología, corrección o métrica no
+existe, el caso no se ejecuta. Los datos están separados del
+código.
+
+2.8 Registro de sesiones
+
+Log determinista. Guarda eventos (caso cargado, optimización
+terminada, ajuste manual). Exportable a JSON. Sirve para
+comparar configuraciones entre sesiones. Sin pretensión clínica.
+
+
+------------------------------------------------------------
+3. CÓMO LO HACE
+------------------------------------------------------------
+
+3.1 Arquitectura hexagonal
+
+Capas, de dentro hacia fuera:
+
+  DOMINIO (puro, sin DOM, sin estado global)
+    - Filters: funciones puras ImageData → ImageData.
+    - Metrics: funciones puras (ImageData, ref?) → número.
+    - Optimizer: búsqueda determinista sobre una función
+      objetivo. Sin estado, sin efectos.
+    - Registros: PathologyRegistry, CorrectionRegistry,
+      MetricRegistry. Mapas explícitos de id → spec.
+
+  APLICACIÓN (casos de uso)
+    - CaseSchema: validación del JSON de caso.
+    - CaseRunner: orquesta patología + corrección + métrica.
+      Aplica la patología, aplica cada corrección, calcula
+      scores, ordena familias.
+    - Optimizador integrado: para cada familia, llama a
+      Optimizer.multiStart con una función objetivo que
+      envuelve (métrica ∘ corrección ∘ patología).
+
+  INFRAESTRUCTURA (adaptadores)
+    - SyntheticImageSource: escena sintética con texto,
+      colores, caras. Determinista. Fallback.
+    - CameraImageSource: getUserMedia. Con fallback a sintética
+      si falla (permisos, HTTP, navegador viejo).
+    - CanvasRenderer: putImageData en un <canvas>.
+    - BrowserClock: performance.now().
+    - LocalStoragePersistence: save/load con try/catch.
+
+  UI (módulos)
+    - Cada módulo declara requires (puertos que consume) y
+      provides (puertos que provee). El orquestador resuelve
+      el orden topológico y monta en orden.
+    - mount(ctx) recibe { bus, container, ports } y devuelve
+      un objeto con las implementaciones de los puertos que
+      provee. El orquestador las registra DESPUÉS de mount,
+      así nunca hay null en los puertos.
+    - frame(ctx) opcional, se llama en cada requestAnimationFrame.
+      Usa ctx.self (puertos que el propio módulo provee) para
+      no requerirse a sí mismo.
+
+3.2 Bus de eventos
+
+EventBus simple: on(evt, cb), off(evt, cb), emit(evt, payload).
+Los módulos se comunican por eventos además de por puertos.
+
+Eventos definidos (contratos):
+  - module:mounted          { id }
+  - case:loaded             { case }
+  - case:invalid            { errors }
+  - case:updateManual       { manual }   // sync manual → JSON
+  - manual:updated          { correctionId, params }
+  - optimization:started    {}
+  - optimization:finished   { result, elapsed }
+  - optimization:applyToManual { correctionId, params }
+  - error                   { module, message }
+
+Ningún módulo llama directamente a otro. Todo pasa por puertos
+inyectados o por eventos. Añadir un módulo nuevo no requiere
+tocar los existentes.
+
+3.3 Flujo de un caso
+
+  1. case-loader valida el JSON y lo publica en el bus.
+  2. manual-controls lee case.corrections, genera sliders
+     desde corrections.get(id).params, inicializa valores
+     desde case.manual o desde los defaults del registro.
+  3. source entrega frames (sintético o cámara).
+  4. preview, cada ~300ms, toma case + frame + manualParams,
+     aplica patología → corrección → métrica, y pinta los
+     tres canvas (original, patología, corrección manual).
+  5. optimizer, cuando se pulsa "Optimizar", toma case + frame,
+     aplica patología, para cada corrección ejecuta multiStart
+     sobre la métrica, y emite optimization:finished con el
+     ranking.
+  6. results escucha optimization:finished y manual:updated,
+     y renderiza la tabla Auto vs Manual. El botón "→ manual"
+     emite optimization:applyToManual.
+  7. manual-controls escucha optimization:applyToManual y
+     vuelca los parámetros a los sliders (y emite manual:updated
+     para que preview y results se actualicen).
+
+3.4 Añadir extensiones (sin tocar el core)
+
+  Nueva patología:
+    pathologies.register('miPatologia', {
+      name, params, apply
+    });
+    Los sliders aparecen solos si un caso la referencia.
+    El optimizador la prueba si está en case.corrections.
+
+  Nueva corrección:
+    corrections.register('miCorreccion', {
+      name, params, apply
+    });
+    Sliders automáticos, optimización automática, integración
+    automática en la tabla de resultados.
+
+  Nueva métrica:
+    metrics.register('miMetrica', { id, name, evaluate });
+    El caso puede referenciarla por id.
+
+  Nuevo módulo de UI:
+    ModuleRegistry.add('miModulo', {
+      requires: ['bus', ...],
+      provides: [...],
+      mount(ctx) { ...; return { puerto: api }; }
+    });
+    El orquestador lo monta en orden topológico.
+
+3.5 Determinismo
+
+Ningún paso usa aleatoriedad ni IA. Multi-start usa
+inicializaciones fijas (centro + esquinas del hipercubo).
+Mismo input → mismo output. Los tests verifican
+comportamiento (blur preserva uniforme, scotoma oscurece
+centro, ssim de idénticas es 1, etc.).
+
+
+------------------------------------------------------------
+4. CÓMO SE USA
+------------------------------------------------------------
+
+4.1 Flujo manual (explorar)
+
+  1. Carga el caso por defecto.
+  2. Mueve sliders en "Control manual". El preview se actualiza.
+  3. Ajusta hasta encontrar una combinación que te parezca
+     interesante.
+  4. Pulsa "Sync manual → JSON" para volcar esos valores al
+     textarea del caso. Ya los tienes persistibles.
+
+4.2 Flujo automático (comparar)
+
+  1. Carga el caso por defecto (o define uno propio).
+  2. Pulsa "Optimizar". Espera unos segundos.
+  3. Mira la tabla: Auto vs Manual vs Δ.
+  4. Si Δ es positivo, tu ajuste manual bate al óptimo.
+     Si negativo, el óptimo bate al manual.
+  5. Pulsa "→ manual" en cualquier fila para volcar el óptimo
+     a los sliders y seguir afinando a ojo desde ahí.
+
+4.3 Flujo cotejo
+
+  1. Optimiza.
+  2. Anota Auto y Manual.
+  3. Pulsa "→ manual" para partir del óptimo.
+  4. Mueve sliders a mano buscando superar Auto.
+  5. Mira Δ en la tabla: te dice si lo has conseguido.
+
+4.4 Definir un caso propio
+
+  Edita el JSON en el textarea del caso. Campos:
+    caseName:     string identificativo.
+    pathology:    { id, params }.
+    corrections:  array de ids a comparar.
+    metric:       id de la métrica.
+    optimization: { iterations, multiStart, sensitivity }.
+    manual:       { correccionId: { param: valor } } opcional.
+
+  Pulsa "Validar JSON". Si es válido, se carga.
+  Si no, se muestran los errores concretos.
+
+
+------------------------------------------------------------
+5. LIMITACIONES (honestidad)
+------------------------------------------------------------
+
+5.1 Mide píxeles, no visión
+
+  El score es un número calculado sobre la imagen. "El score
+  sube" NO significa "el paciente ve mejor". Significa "la
+  imagen se parece más a la referencia" (SSIM) o "tiene más
+  bordes y contraste" (proxy). Son proxies, no validaciones.
+
+5.2 Simula efectos, no causas
+
+  Una catarata en el código es "blur + tinte amarillo". No es
+  "opacidad del cristalino a nivel molecular". Un glaucoma en
+  el código es "máscara radial". No es "muerte de células
+  ganglionares". El simulador imita el SÍNTOMA, no reproduce
+  el mecanismo.
+
+5.3 No hay tarea con ground truth
+
+  Para validar de verdad haría falta una tarea: leer una línea
+  de Snellen, distinguir el 5 del 3 en Ishihara, reconocer una
+  cara, encontrar una puerta. Nada de eso está implementado.
+  SSIM es lo más cerca que está el simulador de "ground truth",
+  y sigue siendo un proxy.
+
+5.4 El optimizador es autorreferente a la métrica
+
+  Optimiza la métrica que le des. Si la métrica es mala, el
+  óptimo será malo (pero "óptimo" según esa métrica). No hay
+  forma de que el sistema detecte "esta métrica no mide lo que
+  crees que mide". Esa responsabilidad es del usuario.
+
+5.5 No hay validación clínica
+
+  No hay pacientes, ni protocolo, ni ciego simple, ni grupo
+  control. No se ha comparado con datos reales. Es un juguete.
+
+5.6 Rendimiento
+
+  Los filtros corren en CPU (Canvas 2D). Para tiempo real con
+  cámara a 60fps habría que portarlos a WebGL/WebGPU. Ahora
+  mismo, el preview reevalúa cada ~300ms, suficiente para
+  explorar, insuficiente para "usar con cámara en vivo como
+  si fuera una ayuda real".
+
+5.7 Dependencias ocultas: ninguna (por diseño)
+
+  El dominio no importa nada del navegador. Los adaptadores
+  son los únicos que tocan DOM, cámara, localStorage. Si
+  mañana se porta a Python o WASM, se reimplementa solo el
+  dominio y se reusan los adaptadores equivalentes.
+
+
+------------------------------------------------------------
+6. RESUMEN EN UNA FRASE
+------------------------------------------------------------
+
+Un banco de pruebas determinista que aplica filtros a imágenes
+para simular el efecto funcional de patologías visuales, y que
+compara familias de corrección automáticas contra ajustes
+manuales mediante métricas de píxeles, con arquitectura
+hexagonal y contratos explícitos. Es un juguete, no un
+producto clínico. Sirve para generar hipótesis y entender el
+problema, no para resolverlo en un paciente real.
+============================================================
