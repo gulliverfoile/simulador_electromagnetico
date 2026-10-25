@@ -1,0 +1,458 @@
+============================================================
+EL JSON DEL CASO — Qué es, qué contiene y cómo se usa
+Archivo: caso.json (o pegado en el textarea "Caso (JSON)")
+============================================================
+
+------------------------------------------------------------
+1. QUÉ ES
+------------------------------------------------------------
+
+El JSON del caso es LA PREGUNTA. Todo lo demás (el motor,
+los filtros, los sliders, el optimizador) es LA RESPUESTA.
+
+Un caso declara, en un solo objeto:
+  - Qué patología simular y con qué severidad.
+  - Qué familias de corrección probar.
+  - Contra qué métrica puntuar (qué significa "mejor").
+  - Cómo optimizar (iteraciones, reinicios, sensibilidad).
+  - Opcionalmente: valores manuales iniciales para los sliders.
+
+Sin caso válido, el motor no hace nada. Con caso válido,
+todo el pipeline se activa automáticamente.
+
+El JSON es DATO, no CÓDIGO. Se puede guardar en disco,
+versionar en git, compartir por email, cargar en otra sesión.
+No requiere tocar el HTML.
+
+Es el "perfil de simulación". El equivalente al "perfil de
+paciente" en un sistema clínico real, pero para un juguete.
+
+
+------------------------------------------------------------
+2. ESTRUCTURA COMPLETA
+------------------------------------------------------------
+
+{
+  "version": "1.1",              // string, opcional, informativo
+  "caseName": "...",             // string, obligatorio
+  "imageSource": "synthetic",    // string, informativo (no usado
+                                 //  por el motor v1.1; reservado)
+  "pathology": {                 // objeto, obligatorio
+    "id": "...",                 // string, obligatorio
+    "params": { ... }            // objeto, opcional (defaults si falta)
+  },
+  "corrections": ["...", "..."], // array<string>, obligatorio, no vacío
+  "metric": "...",               // string, obligatorio
+  "optimization": {              // objeto, opcional (defaults si falta)
+    "iterations": 4,             // number, default 4
+    "multiStart": 3,             // number, default 3
+    "sensitivity": true          // boolean, default false
+  },
+  "manual": {                    // objeto o null, opcional
+    "<correctionId>": { ... }    // parámetros iniciales de sliders
+  }
+}
+
+
+------------------------------------------------------------
+3. CAMPO POR CAMPO
+------------------------------------------------------------
+
+3.1 version  (string, opcional)
+    Informativo. Sirve para llevar control de cambios en tus
+    casos. No lo usa el motor. Pon "1.0", "1.1", etc.
+
+3.2 caseName  (string, obligatorio)
+    Nombre legible del caso. Se muestra en la UI y en el log
+    de sesiones. Útil para identificar qué pregunta estás
+    haciendo. Ejemplos:
+      "Catarata severa — comparar enhance vs sharpen"
+      "Escotoma macular — ¿magnificar o realzar?"
+      "Deuteranopia total — daltonización pura"
+
+3.3 imageSource  (string, opcional)
+    Reservado para futuras versiones. En v1.1 no lo usa el
+    motor (la fuente se elige en el panel "Fuente"). Déjalo
+    como "synthetic" o "camera" para documentar la intención.
+
+3.4 pathology  (objeto, obligatorio)
+    Declara qué patología simular.
+
+    pathology.id  (string, obligatorio)
+        Debe coincidir con un id registrado en pathologies.
+        IDs disponibles v1.1:
+          "cataract"      — cataratas (blur + tinte amarillo)
+          "glaucoma"      — glaucoma (túnel radial)
+          "macular"       — macular seca (escotoma central)
+          "macularWet"    — macular húmeda (distorsión radial)
+          "deuteranopia"  — daltonismo rojo-verde
+
+    pathology.params  (objeto, opcional)
+        Valores concretos para los parámetros de la patología.
+        Si falta o algún parámetro no está, se usa el default
+        del registro. Ejemplos:
+          { "severity": 0.7 }    // cataratas al 70%
+          { "severity": 0.3 }    // glaucoma leve
+        Validación: cada valor debe estar en [min, max] del
+        registro. Si no, no se valida el caso.
+
+3.5 corrections  (array<string>, obligatorio, no vacío)
+    Lista de familias de corrección a comparar. Cada id debe
+    existir en corrections. IDs disponibles v1.1:
+      "none"       — sin corrección (control)
+      "enhance"    — realce (contraste, brillo, saturación, azul)
+      "sharpen"    — enfoque unsharp
+      "magnify"    — magnificación central
+      "daltonize"  — daltonización
+
+    El orden importa para una cosa: el panel "Vista previa"
+    aplica SIEMPRE la primera corrección del array con los
+    params manuales. El resto se comparan en el optimizador.
+
+    Ejemplos:
+      ["enhance"]                       // solo realce
+      ["enhance", "sharpen"]            // comparar dos
+      ["none", "enhance", "sharpen"]    // incluir control
+      ["magnify"]                       // para escotoma macular
+
+3.6 metric  (string, obligatorio)
+    Qué métrica usar para puntuar. Debe existir en metrics.
+    Métricas disponibles v1.1:
+      "proxyLegibility" — proxy de legibilidad (bordes +
+                          contraste). NO necesita referencia.
+                          Es el más "ingenuo" pero también el
+                          más independiente.
+      "ssim"            — similitud estructural contra la
+                          imagen original. NECESITA referencia.
+                          Más honesta que el proxy, porque
+                          compara con "lo que vería un ojo sano".
+      "mse"             — error cuadrático medio invertido.
+                          NECESITA referencia. Es descriptiva.
+
+    Recomendación: usa "ssim" para casos donde quieras
+    "acercarse a la imagen original". Usa "proxyLegibility"
+    si solo quieres ver qué familia mantiene más estructura.
+
+3.7 optimization  (objeto, opcional)
+    Configuración de la búsqueda automática.
+
+    optimization.iterations  (number, default 4)
+        Cuántas pasadas de descenso de coordenadas por
+        reinicio. Más iteraciones = más fino, más lento.
+        Rango típico: 3-6.
+
+    optimization.multiStart  (number, default 3)
+        Cuántos reinicios con inicializaciones distintas.
+        Inicializaciones deterministas: centro del espacio
+        + esquinas del hipercubo. Más reinicios = más
+        robusto contra óptimos locales, más lento.
+        Rango típico: 2-5.
+
+    optimization.sensitivity  (boolean, default false)
+        Si true, después de encontrar el óptimo hace un
+        barrido 1D de cada parámetro para medir "cuánto
+        importa". El resultado aparece como barras de
+        importancia en el panel de resultados. Cuesta un
+        poco más de tiempo pero da información útil.
+
+3.8 manual  (objeto o null, opcional)
+    Valores iniciales para los sliders de control manual.
+
+    Estructura: { "<correctionId>": { "<param>": value } }
+
+    Si un parámetro no está aquí, el slider arranca con el
+    default del registro. Si está, arranca con ese valor
+    (validado contra min/max).
+
+    Ejemplo:
+      "manual": {
+        "enhance": { "contrast": 0.4, "blueBoost": 0.6 },
+        "sharpen": { "amount": 1.2 }
+      }
+
+    Uso típico: cuando has afinado a mano una combinación
+    que te gusta, pulsas "Sync manual → JSON" y esos valores
+    se escriben aquí. La próxima vez que cargues el JSON,
+    los sliders arrancan con ellos.
+
+
+------------------------------------------------------------
+4. EJEMPLOS COMPLETOS
+------------------------------------------------------------
+
+4.1 Caso mínimo (catarata, comparar dos realces)
+
+{
+  "caseName": "Catarata severa",
+  "pathology": { "id": "cataract", "params": { "severity": 0.7 } },
+  "corrections": ["enhance", "sharpen"],
+  "metric": "ssim"
+}
+
+Sin "optimization", se usan los defaults (4 iteraciones,
+3 reinicios, sin sensibilidad). Sin "manual", los sliders
+arrancan con los defaults del registro.
+
+4.2 Caso con optimización afinada
+
+{
+  "caseName": "Catarata severa — búsqueda fina",
+  "pathology": { "id": "cataract", "params": { "severity": 0.7 } },
+  "corrections": ["enhance", "sharpen"],
+  "metric": "ssim",
+  "optimization": {
+    "iterations": 6,
+    "multiStart": 4,
+    "sensitivity": true
+  }
+}
+
+6 iteraciones por reinicio, 4 reinicios, y análisis de
+sensibilidad. Más lento pero más informativo.
+
+4.3 Caso con valores manuales iniciales
+
+{
+  "caseName": "Catarata — partir de mi ajuste favorito",
+  "pathology": { "id": "cataract", "params": { "severity": 0.7 } },
+  "corrections": ["enhance", "sharpen"],
+  "metric": "ssim",
+  "manual": {
+    "enhance": { "contrast": 0.3, "blueBoost": 0.5 }
+  }
+}
+
+Los sliders de enhance arrancan en contraste=0.3,
+blueBoost=0.5. Los de sharpen arrancan con defaults.
+
+4.4 Caso de escotoma macular (magnificación)
+
+{
+  "caseName": "Escotoma macular — ¿magnificar o realzar?",
+  "pathology": { "id": "macular", "params": { "severity": 0.6 } },
+  "corrections": ["none", "enhance", "magnify"],
+  "metric": "ssim"
+}
+
+Tres familias para comparar. El optimizador dirá cuál
+acerca más la imagen a la original.
+
+4.5 Caso de daltonismo (daltonización)
+
+{
+  "caseName": "Deuteranopia — daltonización",
+  "pathology": { "id": "deuteranopia", "params": { "severity": 1.0 } },
+  "corrections": ["daltonize", "enhance"],
+  "metric": "ssim"
+}
+
+Compara daltonización (la corrección "correcta" en teoría)
+contra realce (que no debería ayudar mucho al color). Es
+un buen caso para verificar que el optimizador discrimina
+familias.
+
+
+------------------------------------------------------------
+5. VALIDACIÓN (qué se rechaza y por qué)
+------------------------------------------------------------
+
+El validador (CaseSchema.validate) comprueba, en orden:
+
+  1. El objeto es un objeto. Si es null, array, string, etc.,
+     rechaza con "El caso debe ser un objeto".
+
+  2. caseName existe y es string. Si falta o es otro tipo,
+     añade error.
+
+  3. pathology es un objeto. Si falta, error.
+     Si existe, su id debe existir en el registro. Si no,
+     error con lista de ids disponibles.
+
+  4. corrections es array no vacío. Si no, error.
+     Cada id debe existir en el registro. Si alguno no,
+     error con lista de disponibles.
+
+  5. metric existe y es string. Debe existir en el registro.
+     Si no, error con lista de disponibles.
+
+  6. optimization, si existe, debe ser objeto. Si es string,
+     array, etc., error. (No valida el contenido numérico
+     de iterations/multiStart; solo la forma.)
+
+  7. manual, si existe, debe ser objeto o null. Si es array
+     o string, error. No valida cada parámetro individual
+     contra el registro (eso se hace en manual-controls al
+     inicializar sliders, con clamp silencioso).
+
+Si hay CUALQUIER error:
+  - NO se carga el caso.
+  - El bus emite "case:invalid" con la lista de errores.
+  - El motor sigue con el caso anterior (o con ninguno).
+  - En la UI se ve el mensaje en el panel "Caso (JSON)".
+
+Si todo pasa:
+  - Se carga el caso.
+  - El bus emite "case:loaded" con el caso.
+  - manual-controls regenera sliders.
+  - preview resetea y repinta.
+  - results limpia la tabla (espera nueva optimización).
+  - trainer registra el evento si hay sesión activa.
+
+
+------------------------------------------------------------
+6. FLUJOS DE USO
+------------------------------------------------------------
+
+6.1 Flujo básico (usar el caso por defecto)
+
+  1. Abre el HTML.
+  2. El panel "Caso (JSON)" ya tiene un caso de catarata.
+  3. Pulsa "Validar JSON" (o el motor ya lo cargó).
+  4. Los sliders aparecen, el preview se pinta.
+  5. Mueve sliders (modo manual) o pulsa "Optimizar"
+     (modo automático). Compara en la tabla.
+
+6.2 Flujo "probar mis propias preguntas"
+
+  1. Edita el JSON en el textarea.
+  2. Cambia pathology.id, pathology.params, corrections,
+     metric, etc.
+  3. Pulsa "Validar JSON".
+  4. Si es válido, el motor se resetea con ese caso.
+  5. Prueba los sliders o el optimizador.
+
+6.3 Flujo "guardar mi ajuste manual"
+
+  1. Carga un caso.
+  2. Ajusta sliders a mano.
+  3. Pulsa "Sync manual → JSON". Los valores actuales se
+     escriben en el textarea, dentro del campo "manual".
+  4. Copia el textarea a un archivo .json.
+  5. La próxima vez, carga ese archivo y arranca con esos
+     valores.
+
+6.4 Flujo "comparar manual vs automático"
+
+  1. Carga un caso.
+  2. Pulsa "Optimizar".
+  3. Mira la tabla: columnas Auto, Manual, Δ.
+  4. Si Δ > 0, tu ajuste manual supera al óptimo.
+     Si Δ < 0, el óptimo supera al tuyo.
+  5. Botón "→ manual" en cualquier fila vuelca el óptimo
+     a los sliders para seguir afinando desde ahí.
+
+6.5 Flujo "guardar una sesión completa"
+
+  1. Inicia sesión en el panel "Sesiones".
+  2. Haz lo que quieras (cargar casos, mover sliders,
+     optimizar).
+  3. Pulsa "Exportar JSON".
+  4. Obtienes un archivo con la secuencia de eventos,
+     puntuaciones y parámetros. Útil para comparar
+     sesiones o compartir con otras personas.
+
+
+------------------------------------------------------------
+7. EXTENDER EL SISTEMA
+------------------------------------------------------------
+
+7.1 Añadir una patología nueva
+
+  En el código (no en el JSON), añade:
+
+    pathologies.register('miPatologia', {
+      name: 'Nombre legible',
+      params: {
+        severidad: { min: 0, max: 1, default: 0.5,
+                     label: 'Severidad' }
+      },
+      apply: (src, p) => Filters.miFiltro(src, p.severidad)
+    });
+
+  A partir de ahí, cualquier caso puede usar:
+    "pathology": { "id": "miPatologia",
+                   "params": { "severidad": 0.6 } }
+
+  Los sliders aparecen automáticamente (manual-controls los
+  genera desde params). El optimizador la incluye si está
+  en corrections.
+
+7.2 Añadir una corrección nueva
+
+    corrections.register('miCorreccion', {
+      name: '...',
+      params: { ... },
+      apply: (src, p) => Filters.miFiltro(src, p)
+    });
+
+  Se integra automáticamente en sliders, optimizador y
+  tabla de resultados.
+
+7.3 Añadir una métrica nueva
+
+    metrics.register('miMetrica', {
+      id: 'miMetrica',
+      name: '...',
+      needsReference: true,
+      evaluate: (src, ref) => ...
+    });
+
+  Cualquier caso puede usar "metric": "miMetrica".
+
+
+------------------------------------------------------------
+8. LIMITACIONES Y ADVERTENCIAS
+------------------------------------------------------------
+
+8.1 El JSON define la pregunta, no la valida
+
+  Si pones metric: "proxyLegibility" para una patología que
+  destruye información (como un escotoma), el optimizador
+  va a buscar "más bordes", que puede no tener nada que ver
+  con "ver mejor". El JSON no te avisa de eso. Es tu
+  responsabilidad elegir la métrica que tenga sentido para
+  la pregunta.
+
+8.2 El optimizador es local
+
+  Descenso de coordenadas con multi-start es robusto pero
+  no exhaustivo. Con 4-5 parámetros funciona bien. Con 8+
+  parámetros el espacio es demasiado grande y el óptimo
+  puede no ser global. La varianza entre reinicios (columna
+  "Varianza") te dice si el óptimo es estable.
+
+8.3 El manual no valida contra referencia
+
+  El campo "manual" solo carga valores iniciales en los
+  sliders. Si esos valores no están en [min, max] del
+  registro, se hace clamp silencioso al rango válido. No
+  se rechaza el caso por eso (sería demasiado estricto),
+  pero conviene comprobar los rangos al escribir el JSON.
+
+8.4 imageSource no lo usa el motor
+
+  En v1.1 el campo "imageSource" es solo documental. La
+  fuente se elige en el panel "Fuente". En versiones
+  futuras podría servir para que un caso fuerce una fuente
+  concreta.
+
+8.5 No hay validación clínica
+
+  El JSON es la pregunta. La respuesta (el score, el
+  óptimo) es una respuesta de píxeles, no de visión. Para
+  validar de verdad haría falta una tarea con ground truth
+  (leer un texto, distinguir un Ishihara) y datos de
+  pacientes. Nada de eso está implementado. Es un juguete.
+
+
+------------------------------------------------------------
+9. RESUMEN EN UNA FRASE
+------------------------------------------------------------
+
+El JSON del caso es el objeto que declara qué patología
+simular, qué correcciones probar, contra qué métrica
+puntuarlas y cómo optimizar; separa datos de código; se
+valida antes de ejecutarse; y opcionalmente guarda los
+valores manuales de los sliders para reproducir una
+configuración. Es el contrato entre el usuario y el motor.
+============================================================
